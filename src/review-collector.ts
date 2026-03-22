@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { parseSeverity } from "./severity-parser";
-import type { Finding, RawReviewComment } from "./types";
+import { parseSeverity } from "./severity-parser.js";
+import type { Finding, RawReviewComment } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 

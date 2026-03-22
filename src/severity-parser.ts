@@ -1,4 +1,4 @@
-import type { ParsedComment } from "./types";
+import type { ParsedComment } from "./types.js";
 
 // Leading \n is optional so the pattern matches when the footer is the only body content
 const CODEX_FOOTER_PATTERN = /\n?Useful\? React with 👍 \/ 👎\.\s*$/;
