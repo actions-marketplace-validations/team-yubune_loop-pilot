@@ -51,7 +51,9 @@ function loadBaseConfig(): Omit<Config, "anthropicApiKey"> {
 }
 
 function env(key: string, defaultValue: string): string {
-  return process.env[key] || defaultValue;
+  const value = process.env[key];
+  if (value === undefined || value === "") return defaultValue;
+  return value;
 }
 
 function intEnv(key: string, defaultValue: number): number {

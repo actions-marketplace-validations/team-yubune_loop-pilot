@@ -160,10 +160,12 @@ async function main(): Promise<void> {
 
   // ─── Phase 2: Judge ───────────────────────────────────────────────────────
 
+  // Note: iterationCount is NOT incremented here.
+  // It is incremented only after a successful Claude fix (Phase 3).
+  // Spec: "If the initial review has 0 P0/P1, iterationCount is 0."
   const updatedStateBase: ReviewState = {
     ...state,
     lastProcessedReviewId: triggerCommentId || state.lastProcessedReviewId,
-    iterationCount: state.iterationCount + 1,
     lastCodexReviewReceivedAt: new Date().toISOString(),
   };
 
@@ -254,14 +256,16 @@ async function main(): Promise<void> {
 
   // Record current hash in history before fixing
   const currentHash = computeFindingsHash(findings);
+  const newIteration = state.iterationCount + 1;
   const updatedHashHistory = [
     ...state.findingsHashHistory,
-    { iteration: updatedStateBase.iterationCount, hash: currentHash },
+    { iteration: newIteration, hash: currentHash },
   ];
 
-  // Transition to "fixing"
+  // Transition to "fixing" — iterationCount incremented here (after judge passed)
   const fixingState: ReviewState = {
     ...updatedStateBase,
+    iterationCount: newIteration,
     status: "fixing",
     lastFindingsHash: currentHash,
     findingsHashHistory: updatedHashHistory,
@@ -312,6 +316,8 @@ async function main(): Promise<void> {
       skippedFiles.push(filePath);
       continue;
     }
+
+    try {  // Wrap Claude API + edit logic to catch unrecoverable errors
 
     // Token estimation guard: skip files that are too large
     const estimatedTokens = Math.ceil(fileContent.length / 4);
@@ -455,6 +461,14 @@ async function main(): Promise<void> {
     console.log(
       `[main-loop] Applied ${successfulEdits.length} edit(s) to ${filePath}.`
     );
+
+    } catch (fileError: unknown) {
+      // Catch unrecoverable errors (e.g., 400 Bad Request from Claude API)
+      // to prevent leaving state stuck in "fixing"
+      console.error(`[main-loop] Error processing ${filePath}:`, fileError);
+      skippedFiles.push(filePath);
+      continue;
+    }
   }
 
   // If no edits were applied across all files → stop with claude_api_error
@@ -521,12 +535,13 @@ async function main(): Promise<void> {
 
   // git add individual files using execFileSync to avoid shell injection
   execFileSync("git", ["add", ...modifiedFiles], { stdio: "inherit" });
+  const commitBody = allAppliedEdits.map((e) => `- ${e.explanation}`).join("\n");
   execFileSync(
     "git",
     [
       "commit",
       "-m",
-      `fix: auto-fix iteration ${fixingState.iterationCount} [skip ci]`,
+      `fix: auto-resolve P0/P1 findings from Codex review (iteration ${fixingState.iterationCount})\n\n${commitBody}`,
     ],
     { stdio: "inherit" }
   );
