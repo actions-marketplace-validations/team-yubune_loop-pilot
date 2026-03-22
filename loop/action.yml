@@ -1,0 +1,56 @@
+name: "Auto Review Loop"
+description: "Run one Codex review → Claude fix iteration"
+
+inputs:
+  github-token:
+    description: "GitHub token with contents:write, pull-requests:write, issues:write"
+    required: true
+  anthropic-api-key:
+    description: "Anthropic API key for Claude"
+    required: true
+  pr-number:
+    description: "Pull request number"
+    required: true
+  pr-head-ref:
+    description: "PR head branch ref name"
+    required: true
+  pr-title:
+    description: "PR title"
+    required: false
+    default: ""
+  trigger-comment-id:
+    description: "ID of the Codex summary comment that triggered this run"
+    required: false
+    default: "0"
+  max-review-iterations:
+    description: "Maximum number of review-fix iterations"
+    required: false
+    default: "20"
+  debounce-seconds:
+    description: "Seconds to wait after Codex summary comment before collecting inline comments"
+    required: false
+    default: "90"
+  check-command:
+    description: "Shell command to run after applying fixes (test/lint/typecheck)"
+    required: false
+    default: "npm run check"
+  max-files-per-iteration:
+    description: "Maximum files to fix per iteration"
+    required: false
+    default: "10"
+  max-input-tokens-per-file:
+    description: "Maximum estimated input tokens per file (skip if exceeded)"
+    required: false
+    default: "30000"
+  codex-bot-login:
+    description: "GitHub login of the Codex bot"
+    required: false
+    default: "chatgpt-codex-connector[bot]"
+  codex-review-marker:
+    description: "Text marker in Codex summary comment"
+    required: false
+    default: "Codex Review"
+
+runs:
+  using: "node20"
+  main: "../dist/loop/index.js"

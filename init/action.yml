@@ -1,0 +1,14 @@
+name: "Auto Review Init"
+description: "Initialize the Codex review × Claude fix auto-loop for a PR"
+
+inputs:
+  github-token:
+    description: "GitHub token with contents:read, pull-requests:write, issues:write"
+    required: true
+  pr-number:
+    description: "Pull request number"
+    required: true
+
+runs:
+  using: "node20"
+  main: "../dist/init/index.js"

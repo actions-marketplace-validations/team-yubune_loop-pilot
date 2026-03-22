@@ -1,3 +1,15 @@
+# Workflow B: Codex review received → Claude fix → re-review
+# Spec: docs/architecture/event-design.md#workflow-b
+#
+# Usage in other repos:
+#   - uses: your-org/auto-review-action/loop@v1
+#     with:
+#       github-token: ${{ secrets.GITHUB_TOKEN }}
+#       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+#       pr-number: ${{ github.event.issue.number }}
+#       pr-head-ref: ${{ steps.pr.outputs.head_ref }}
+#       pr-title: ${{ steps.pr.outputs.title }}
+#       trigger-comment-id: ${{ github.event.comment.id }}
 name: Auto Review Loop
 
 on:
@@ -50,34 +62,24 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: npm ci
-
       - name: Run auto-fix loop
-        run: npx tsx src/main-loop.ts
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          PR_NUMBER: ${{ github.event.issue.number }}
-          PR_HEAD_REF: ${{ steps.pr.outputs.head_ref }}
-          PR_TITLE: ${{ steps.pr.outputs.title }}
-          TRIGGER_COMMENT_ID: ${{ github.event.comment.id }}
-          MAX_REVIEW_ITERATIONS: ${{ vars.MAX_REVIEW_ITERATIONS || '20' }}
-          DEBOUNCE_SECONDS: ${{ vars.DEBOUNCE_SECONDS || '90' }}
-          CHECK_COMMAND: ${{ vars.CHECK_COMMAND || 'npm run check' }}
-          MAX_FILES_PER_ITERATION: ${{ vars.MAX_FILES_PER_ITERATION || '10' }}
-          MAX_INPUT_TOKENS_PER_FILE: ${{ vars.MAX_INPUT_TOKENS_PER_FILE || '30000' }}
-          CODEX_BOT_LOGIN: ${{ vars.CODEX_BOT_LOGIN || 'chatgpt-codex-connector[bot]' }}
-          STABILIZE_INTERVAL_SECONDS: ${{ vars.STABILIZE_INTERVAL_SECONDS || '10' }}
-          STABILIZE_COUNT: ${{ vars.STABILIZE_COUNT || '3' }}
-          CODEX_REVIEW_MARKER: ${{ vars.CODEX_REVIEW_MARKER || 'Codex Review' }}
+        uses: ./loop
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          pr-number: ${{ github.event.issue.number }}
+          pr-head-ref: ${{ steps.pr.outputs.head_ref }}
+          pr-title: ${{ steps.pr.outputs.title }}
+          trigger-comment-id: ${{ github.event.comment.id }}
+          max-review-iterations: ${{ vars.MAX_REVIEW_ITERATIONS || '20' }}
+          debounce-seconds: ${{ vars.DEBOUNCE_SECONDS || '90' }}
+          check-command: ${{ vars.CHECK_COMMAND || 'npm run check' }}
+          max-files-per-iteration: ${{ vars.MAX_FILES_PER_ITERATION || '10' }}
+          max-input-tokens-per-file: ${{ vars.MAX_INPUT_TOKENS_PER_FILE || '30000' }}
+          codex-bot-login: ${{ vars.CODEX_BOT_LOGIN || 'chatgpt-codex-connector[bot]' }}
+          codex-review-marker: ${{ vars.CODEX_REVIEW_MARKER || 'Codex Review' }}
 
+      # PoC: Save Codex comments as artifact for parser validation
       - name: Save Codex comments as artifact
         if: always()
         run: |

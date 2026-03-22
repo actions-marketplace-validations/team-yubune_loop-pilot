@@ -1,5 +1,11 @@
-# Workflow A: PR creation initialization
+# Workflow A: PR creation → initialize auto-review
 # Spec: docs/architecture/event-design.md#workflow-a
+#
+# Usage in other repos:
+#   - uses: your-org/auto-review-action/init@v1
+#     with:
+#       github-token: ${{ secrets.GITHUB_TOKEN }}
+#       pr-number: ${{ github.event.pull_request.number }}
 name: Auto Review Init
 
 on:
@@ -20,14 +26,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: npm ci
-
       - name: Check fork PR (security guard)
         if: github.event.pull_request.head.repo.full_name != github.repository
         run: |
@@ -35,8 +33,7 @@ jobs:
           exit 1
 
       - name: Run init
-        run: npx tsx src/main-init.ts
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+        uses: ./init
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pr-number: ${{ github.event.pull_request.number }}

@@ -1,2 +1,5 @@
 node_modules/
 dist/
+# dist/init/ and dist/loop/ are committed (required by GitHub Actions JS actions)
+!dist/init/
+!dist/loop/
