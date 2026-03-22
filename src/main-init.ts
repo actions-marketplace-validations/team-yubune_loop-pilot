@@ -20,8 +20,12 @@ async function run(): Promise<void> {
   let commentId: number;
   let state = createInitialState();
 
-  if (existing) {
+  if (existing.found) {
     core.info("Found existing state comment, resetting to initialized");
+    commentId = existing.commentId;
+    await updateStateComment(config.repoOwner, config.repoName, commentId, state, config.githubToken);
+  } else if (existing.corrupted && existing.commentId !== null) {
+    core.warning("Found corrupted state comment, overwriting with fresh state");
     commentId = existing.commentId;
     await updateStateComment(config.repoOwner, config.repoName, commentId, state, config.githubToken);
   } else {

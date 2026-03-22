@@ -122,17 +122,26 @@ export function deserializeState(commentBody: string): ReviewState | null {
   }
 }
 
+export type ReadStateResult =
+  | { found: true; corrupted: false; state: ReviewState; commentId: number }
+  | { found: false; corrupted: false; commentId: null }
+  | { found: false; corrupted: true; commentId: number | null };
+
 /**
  * Reads state from GitHub PR issue comments by scanning for the hidden state marker.
  * Uses gh api with --paginate to handle PRs with many comments.
- * Returns null if no state comment is found.
+ *
+ * Returns a discriminated union:
+ * - `{ found: true, state, commentId }` — state read successfully
+ * - `{ found: false, corrupted: false, commentId: null }` — no hidden comment exists
+ * - `{ found: false, corrupted: true, commentId }` — hidden comment exists but JSON is invalid
  */
 export async function readState(
   owner: string,
   name: string,
   pr: number,
   token: string,
-): Promise<{ state: ReviewState; commentId: number } | null> {
+): Promise<ReadStateResult> {
   const { stdout } = await execFileAsync(
     "gh",
     [
@@ -149,7 +158,7 @@ export async function readState(
 
   const trimmed = stdout.trim();
   if (!trimmed) {
-    return null;
+    return { found: false, corrupted: false, commentId: null };
   }
 
   // @json wraps each result as a JSON-encoded string on its own line; double-decode to get the object.
@@ -161,19 +170,19 @@ export async function readState(
   try {
     parsed = JSON.parse(JSON.parse(lastLine)) as { id: number; body: string };
   } catch {
-    return null;
+    return { found: false, corrupted: true, commentId: null };
   }
 
   if (typeof parsed?.id !== "number" || typeof parsed?.body !== "string") {
-    return null;
+    return { found: false, corrupted: true, commentId: null };
   }
 
   const state = deserializeState(parsed.body);
   if (!state) {
-    return null;
+    return { found: false, corrupted: true, commentId: parsed.id };
   }
 
-  return { state, commentId: parsed.id };
+  return { found: true, corrupted: false, state, commentId: parsed.id };
 }
 
 /**

@@ -8,6 +8,10 @@ inputs:
   pr-number:
     description: "Pull request number"
     required: true
+  github-repository:
+    description: "Repository in owner/name format (auto-detected in GitHub Actions)"
+    required: false
+    default: ""
 
 runs:
   using: "node20"

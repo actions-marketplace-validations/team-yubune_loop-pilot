@@ -50,6 +50,18 @@ inputs:
     description: "Text marker in Codex summary comment"
     required: false
     default: "Codex Review"
+  stabilize-interval-seconds:
+    description: "Polling interval (seconds) for comment count stabilization safeguard"
+    required: false
+    default: "10"
+  stabilize-count:
+    description: "Number of consecutive stable polls before considering comments settled"
+    required: false
+    default: "3"
+  github-repository:
+    description: "Repository in owner/name format (auto-detected in GitHub Actions)"
+    required: false
+    default: ""
 
 runs:
   using: "node20"

@@ -29954,6 +29954,19 @@ function validateState(obj) {
   }
   return true;
 }
+function createInitialState() {
+  return {
+    iterationCount: 0,
+    lastProcessedReviewId: null,
+    lastClaudeCommitSha: null,
+    lastCodexRequestCommentId: null,
+    lastCodexReviewReceivedAt: null,
+    lastFindingsHash: null,
+    findingsHashHistory: [],
+    status: "initialized",
+    stopReason: null
+  };
+}
 function serializeState(state) {
   const trimmed = {
     ...state,
@@ -30001,7 +30014,7 @@ async function readState(owner, name, pr2, token) {
   ], { env: buildGhEnv(token), maxBuffer: MAX_BUFFER });
   const trimmed = stdout.trim();
   if (!trimmed) {
-    return null;
+    return { found: false, corrupted: false, commentId: null };
   }
   const lines = trimmed.split("\n").filter((l2) => l2.trim());
   const lastLine = lines[lines.length - 1];
@@ -30009,16 +30022,16 @@ async function readState(owner, name, pr2, token) {
   try {
     parsed = JSON.parse(JSON.parse(lastLine));
   } catch {
-    return null;
+    return { found: false, corrupted: true, commentId: null };
   }
   if (typeof parsed?.id !== "number" || typeof parsed?.body !== "string") {
-    return null;
+    return { found: false, corrupted: true, commentId: null };
   }
   const state = deserializeState(parsed.body);
   if (!state) {
-    return null;
+    return { found: false, corrupted: true, commentId: parsed.id };
   }
-  return { state, commentId: parsed.id };
+  return { found: true, corrupted: false, state, commentId: parsed.id };
 }
 async function updateStateComment(owner, name, commentId, state, token) {
   const body = serializeState(state);
@@ -30148,37 +30161,40 @@ var EDIT_FILE_TOOL = {
 };
 function buildSystemPrompt(iteration, maxIterations) {
   const remainingIterations = maxIterations - iteration;
-  const conservativeNote = remainingIterations <= 2 ? `
-IMPORTANT: Only ${remainingIterations} iteration(s) remaining. Be very conservative \u2014 only fix the most critical issues (P0) and ensure each fix is correct the first time.` : "";
-  return `You are an automated code fix assistant. Your task is to fix code issues identified by code review.
+  const conservativeNote = remainingIterations < 3 ? `
+IMPORTANT: Only ${remainingIterations} iteration(s) remaining. Prefer conservative, minimal fixes over ambitious rewrites. Prioritize P0 findings over P1 when iteration budget is limited.` : "";
+  return `You are a senior software engineer fixing code review findings on a pull request.
+You will receive Codex review findings (P0/P1 severity) and the source file content.
+Use the edit_file tool to make precise, minimal fixes for each finding.
 
 Rules:
-- Fix ONLY P0 (critical) and P1 (high priority) issues. Ignore P2 and lower.
-- Make the MINIMAL change necessary to fix each issue. Do not refactor or improve unrelated code.
-- Use the edit_file tool for EVERY fix. Do not output explanatory text without a corresponding tool call.
-- Each edit_file call must replace exactly the problematic code section with the corrected version.
-- The old_code field must match EXACTLY what appears in the file (including whitespace and indentation).
-- If you cannot safely fix an issue without understanding more context, skip it rather than guess.
-- Do not introduce new dependencies or change function signatures unless strictly required to fix the issue.
-- If there are no fixable issues, do not call edit_file at all.${conservativeNote}`;
+- Fix ONLY the listed P0/P1 findings. Do not fix anything else.
+- Do not perform unrelated refactors, style changes, or improvements.
+- Do not change public APIs unless strictly necessary to fix a finding.
+- Preserve existing behavior outside the scope of each finding.
+- Each edit_file call must include an explanation of why the change fixes the finding.
+- If a finding cannot be fixed safely without risking breakage, do NOT edit the file.
+  Instead, respond with a text message explaining why the fix is unsafe.
+- You will be told the current iteration number and max iterations.${conservativeNote}`;
 }
-function buildUserPrompt(prContext, filePath, fileContent, findings) {
-  const findingsJson = JSON.stringify(findings, null, 2);
-  return `## Pull Request Context
+function buildUserPrompt(prContext, filePath, fileContent, findings, iteration, maxIterations) {
+  const findingsJson = JSON.stringify(findings.map(({ severity, line, title, body }) => ({ severity, line, title, body })), null, 2);
+  return `## PR Context
 - PR #${prContext.number}: ${prContext.title}
 - Branch: ${prContext.branch}
+- Iteration: ${iteration} / ${maxIterations}
 
-## File to Fix: ${filePath}
+## Target File
+Path: ${filePath}
 
 \`\`\`
 ${fileContent}
 \`\`\`
 
 ## Findings to Fix
-
 ${findingsJson}
 
-Please fix the P0 and P1 findings above using the edit_file tool. Make minimal, targeted changes.`;
+Fix each finding above using the edit_file tool.`;
 }
 function getRetryDecision(error3, attempt) {
   if (error3 instanceof sdk_default.RateLimitError) {
@@ -30235,7 +30251,7 @@ function parseEditOperations(response) {
 }
 async function fixFile(client, prContext, filePath, fileContent, findings, iteration, maxIterations) {
   const systemPrompt = buildSystemPrompt(iteration, maxIterations);
-  const userPrompt = buildUserPrompt(prContext, filePath, fileContent, findings);
+  const userPrompt = buildUserPrompt(prContext, filePath, fileContent, findings, iteration, maxIterations);
   let attempt = 0;
   while (true) {
     attempt++;
@@ -30616,8 +30632,24 @@ async function main() {
   }
   core4.info(`[main-loop] Starting Workflow B for PR #${config.prNumber}, trigger comment: ${triggerCommentId}`);
   const stateResult = await readState(config.repoOwner, config.repoName, config.prNumber, config.githubToken);
-  if (!stateResult) {
+  if (!stateResult.found && !stateResult.corrupted) {
     core4.info("[main-loop] No state found. Workflow A has not run. Skipping.");
+    return;
+  }
+  if (!stateResult.found && stateResult.corrupted) {
+    core4.error("[main-loop] Hidden comment found but state JSON is corrupted.");
+    if (stateResult.commentId !== null) {
+      const corruptedState = {
+        ...createInitialState(),
+        status: "stopped",
+        stopReason: "state_corrupted"
+      };
+      await updateStateComment(config.repoOwner, config.repoName, stateResult.commentId, corruptedState, config.githubToken);
+    }
+    await postStopComment(config.repoOwner, config.repoName, config.prNumber, "state_corrupted", triggerCommentId, 0, "Hidden comment state JSON is corrupted. Manual re-initialization required.", config.githubToken);
+    return;
+  }
+  if (!stateResult.found) {
     return;
   }
   const { state, commentId } = stateResult;
@@ -30904,15 +30936,15 @@ main().catch(async (error3) => {
   core4.setFailed(error3 instanceof Error ? error3.message : String(error3));
   try {
     const crashConfig = loadInitConfig();
-    const stateResult = await readState(crashConfig.repoOwner, crashConfig.repoName, crashConfig.prNumber, crashConfig.githubToken);
-    if (stateResult && stateResult.state.status === "fixing") {
+    const crashStateResult = await readState(crashConfig.repoOwner, crashConfig.repoName, crashConfig.prNumber, crashConfig.githubToken);
+    if (crashStateResult.found && crashStateResult.state.status === "fixing") {
       core4.warning("[main-loop] Crash recovery: resetting fixing \u2192 stopped (state_corrupted)");
       const recoveredState = {
-        ...stateResult.state,
+        ...crashStateResult.state,
         status: "stopped",
         stopReason: "state_corrupted"
       };
-      await updateStateComment(crashConfig.repoOwner, crashConfig.repoName, stateResult.commentId, recoveredState, crashConfig.githubToken);
+      await updateStateComment(crashConfig.repoOwner, crashConfig.repoName, crashStateResult.commentId, recoveredState, crashConfig.githubToken);
     }
   } catch (recoveryError) {
     core4.error(`[main-loop] Crash recovery failed: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`);

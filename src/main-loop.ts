@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import Anthropic from "@anthropic-ai/sdk";
 import * as core from "@actions/core";
 import { loadConfig, loadInitConfig } from "./config.js";
-import { readState, updateStateComment } from "./state-manager.js";
+import { createInitialState, readState, updateStateComment } from "./state-manager.js";
 import {
   fetchReviewComments,
   filterAndParseComments,
@@ -101,12 +101,47 @@ async function main(): Promise<void> {
     config.githubToken
   );
 
-  // Guard: no state means Workflow A hasn't run yet — skip silently
-  if (!stateResult) {
+  // Guard: no hidden comment means Workflow A hasn't run yet — skip silently
+  if (!stateResult.found && !stateResult.corrupted) {
     core.info("[main-loop] No state found. Workflow A has not run. Skipping.");
     return;
   }
 
+  // Guard: hidden comment exists but JSON is corrupted
+  if (!stateResult.found && stateResult.corrupted) {
+    core.error("[main-loop] Hidden comment found but state JSON is corrupted.");
+    if (stateResult.commentId !== null) {
+      const corruptedState: ReviewState = {
+        ...createInitialState(),
+        status: "stopped",
+        stopReason: "state_corrupted",
+      };
+      await updateStateComment(
+        config.repoOwner,
+        config.repoName,
+        stateResult.commentId,
+        corruptedState,
+        config.githubToken
+      );
+    }
+    await postStopComment(
+      config.repoOwner,
+      config.repoName,
+      config.prNumber,
+      "state_corrupted",
+      triggerCommentId,
+      0,
+      "Hidden comment state JSON is corrupted. Manual re-initialization required.",
+      config.githubToken
+    );
+    return;
+  }
+
+  // At this point both not-found cases have returned, so stateResult.found is true.
+  if (!stateResult.found) {
+    // Unreachable — guard for type narrowing
+    return;
+  }
   const { state, commentId } = stateResult;
 
   // Guard: status === "initialized" means Workflow A never posted the review request
@@ -717,25 +752,25 @@ main().catch(async (error) => {
   try {
     // Use loadInitConfig to avoid requiring ANTHROPIC_API_KEY for recovery
     const crashConfig = loadInitConfig();
-    const stateResult = await readState(
+    const crashStateResult = await readState(
       crashConfig.repoOwner,
       crashConfig.repoName,
       crashConfig.prNumber,
       crashConfig.githubToken
     );
-    if (stateResult && stateResult.state.status === "fixing") {
+    if (crashStateResult.found && crashStateResult.state.status === "fixing") {
       core.warning(
         "[main-loop] Crash recovery: resetting fixing → stopped (state_corrupted)"
       );
       const recoveredState: ReviewState = {
-        ...stateResult.state,
+        ...crashStateResult.state,
         status: "stopped",
         stopReason: "state_corrupted",
       };
       await updateStateComment(
         crashConfig.repoOwner,
         crashConfig.repoName,
-        stateResult.commentId,
+        crashStateResult.commentId,
         recoveredState,
         crashConfig.githubToken
       );

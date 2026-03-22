@@ -19735,10 +19735,10 @@ Support boolean input list: \`true | True | TRUE | false | False | FALSE\``);
       (0, command_1.issueCommand)("error", (0, utils_1.toCommandProperties)(properties), message instanceof Error ? message.toString() : message);
     }
     exports2.error = error;
-    function warning(message, properties = {}) {
+    function warning2(message, properties = {}) {
       (0, command_1.issueCommand)("warning", (0, utils_1.toCommandProperties)(properties), message instanceof Error ? message.toString() : message);
     }
-    exports2.warning = warning;
+    exports2.warning = warning2;
     function notice(message, properties = {}) {
       (0, command_1.issueCommand)("notice", (0, utils_1.toCommandProperties)(properties), message instanceof Error ? message.toString() : message);
     }
@@ -19996,7 +19996,7 @@ async function readState(owner, name, pr, token) {
   ], { env: buildGhEnv(token), maxBuffer: MAX_BUFFER });
   const trimmed = stdout.trim();
   if (!trimmed) {
-    return null;
+    return { found: false, corrupted: false, commentId: null };
   }
   const lines = trimmed.split("\n").filter((l) => l.trim());
   const lastLine = lines[lines.length - 1];
@@ -20004,16 +20004,16 @@ async function readState(owner, name, pr, token) {
   try {
     parsed = JSON.parse(JSON.parse(lastLine));
   } catch {
-    return null;
+    return { found: false, corrupted: true, commentId: null };
   }
   if (typeof parsed?.id !== "number" || typeof parsed?.body !== "string") {
-    return null;
+    return { found: false, corrupted: true, commentId: null };
   }
   const state = deserializeState(parsed.body);
   if (!state) {
-    return null;
+    return { found: false, corrupted: true, commentId: parsed.id };
   }
-  return { state, commentId: parsed.id };
+  return { found: true, corrupted: false, state, commentId: parsed.id };
 }
 async function createStateComment(owner, name, pr, state, token) {
   const body = serializeState(state);
@@ -20077,8 +20077,12 @@ async function run() {
   const existing = await readState(config.repoOwner, config.repoName, config.prNumber, config.githubToken);
   let commentId;
   let state = createInitialState();
-  if (existing) {
+  if (existing.found) {
     core2.info("Found existing state comment, resetting to initialized");
+    commentId = existing.commentId;
+    await updateStateComment(config.repoOwner, config.repoName, commentId, state, config.githubToken);
+  } else if (existing.corrupted && existing.commentId !== null) {
+    core2.warning("Found corrupted state comment, overwriting with fresh state");
     commentId = existing.commentId;
     await updateStateComment(config.repoOwner, config.repoName, commentId, state, config.githubToken);
   } else {
