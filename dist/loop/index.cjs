@@ -29330,6 +29330,7 @@ var import_node_util2 = require("node:util");
 
 // dist/severity-parser.js
 var CODEX_FOOTER_PATTERN = /\n?Useful\? React with 👍 \/ 👎\.\s*$/;
+var NO_FINDINGS_PATTERN = /\bno\s+(?:p0\s*\/\s*p1\s+)?findings?\b|\b0\s+findings?\b|\bno\s+issues?\b/i;
 var STAGE1_REGEX = /^\s*\[?(P[0-2])\]?\s*(.*)/;
 var STAGE2_REGEX = /^\s*(?:\*{2})?\[?(P[0-2])\]?(?:\*{2})?\s*(.*)/;
 var FALLBACK_KEYWORD_REGEX = /\b(P0|P1)\b/;
@@ -29343,13 +29344,16 @@ function parseSeverity(rawBody) {
   if (stage1Match) {
     const severity = stage1Match[1];
     const title = stage1Match[2].trim();
-    return { severity, title, body };
+    return { severity, title: cleanTitle(title), body };
   }
   const stage2Match = STAGE2_REGEX.exec(firstLine);
   if (stage2Match) {
     const severity = stage2Match[1];
     const title = stage2Match[2].trim();
-    return { severity, title, body };
+    return { severity, title: cleanTitle(title), body };
+  }
+  if (NO_FINDINGS_PATTERN.test(firstLine)) {
+    return { severity: null, title: firstLine.trim(), body };
   }
   const fallbackMatch = FALLBACK_KEYWORD_REGEX.exec(stripped);
   if (fallbackMatch) {
@@ -29357,6 +29361,9 @@ function parseSeverity(rawBody) {
     return { severity, title: firstLine.trim(), body };
   }
   return { severity: null, title: firstLine.trim(), body };
+}
+function cleanTitle(title) {
+  return title.trim().replace(/^\*\*(.+)\*\*$/, "$1").replace(/^__(.+)__$/, "$1").trim();
 }
 
 // dist/review-collector.js

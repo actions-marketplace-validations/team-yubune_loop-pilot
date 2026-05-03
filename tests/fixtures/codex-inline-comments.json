@@ -1,0 +1,38 @@
+[
+  {
+    "name": "p1-bracket-bold-title",
+    "expected": {
+      "severity": "P1",
+      "title": "Base exits on bar closes instead of intrabar extremes",
+      "body": "The exit logic triggers TP/SL whenever the 1m close crosses the levels, but the strategy should evaluate intrabar high/low extremes."
+    },
+    "body": "[P1] **Base exits on bar closes instead of intrabar extremes**\n\nThe exit logic triggers TP/SL whenever the 1m close crosses the levels, but the strategy should evaluate intrabar high/low extremes.\n\nUseful? React with 👍 / 👎."
+  },
+  {
+    "name": "p0-bold-bracket-badge",
+    "expected": {
+      "severity": "P0",
+      "title": "Token refresh can bypass expiry validation",
+      "body": "Expired sessions remain valid when the token is auto-renewed before the expiry check runs."
+    },
+    "body": "**[P0]** Token refresh can bypass expiry validation\n\nExpired sessions remain valid when the token is auto-renewed before the expiry check runs.\n\nUseful? React with 👍 / 👎."
+  },
+  {
+    "name": "p2-not-auto-fix-target",
+    "expected": {
+      "severity": "P2",
+      "title": "Prefer const for immutable local",
+      "body": "This is a low-priority style suggestion and should not be sent to the auto-fix path."
+    },
+    "body": "[P2] Prefer const for immutable local\n\nThis is a low-priority style suggestion and should not be sent to the auto-fix path.\n\nUseful? React with 👍 / 👎."
+  },
+  {
+    "name": "non-target-summary-with-p0-p1-words",
+    "expected": {
+      "severity": null,
+      "title": "Codex Review completed. No P0/P1 findings.",
+      "body": ""
+    },
+    "body": "Codex Review completed. No P0/P1 findings."
+  }
+]

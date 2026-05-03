@@ -8,7 +8,7 @@
 
 - [ ] Workflow A: PR 作成時に hidden comment 作成 + `@codex review` 投稿 → [Workflow A](../architecture/event-design.md#workflow-a-pr-作成時auto-review-inityml)
 - [ ] Workflow B: Codex レビュー受信 + デバウンス待機 + Claude 修正 + 再レビュー依頼 → [Workflow B](../architecture/event-design.md#workflow-b-codex-レビュー受信--claude-修正auto-review-loopyml)
-- [ ] Severity パーサー（P0/P1 抽出の正規表現） → [Severity の抽出ルール](../specs/severity-parser.md#severity-の抽出ルール)
+- [x] Severity パーサー（P0/P1 抽出の正規表現） → [Severity の抽出ルール](../specs/severity-parser.md#severity-の抽出ルール)
 - [ ] Claude API 呼び出し（`edit_file` tool use） → [Claude 修正エンジン](../specs/claude-fix-engine.md)
 - [ ] `edit_file` 適用ロジック（逆順適用・空白正規化・複数マッチ・再試行） → [edit 適用ロジック](../specs/claude-fix-engine.md#edit-適用ロジック)
 - [ ] `CHECK_COMMAND` 実行 + 失敗時ロールバック → [検証コマンドとロールバック](../operations/check-and-rollback.md)
@@ -24,7 +24,7 @@
 
 - [ ] `@codex review` メンション形式で Codex が起動するか確認
 - [ ] 総評コメント / インラインコメントの投稿順序を確認
-- [ ] Codex インラインコメントの原文を Artifact として保存し、パーサーのテストケースにする
+- [x] Codex インラインコメントの原文を Artifact として保存する step を追加し、匿名化 fixture でパーサーのテストケースにする
 - [ ] `issue_comment` トリガーでの `GITHUB_TOKEN` 権限を確認
 - [ ] デバウンス時間の最適値を検証
 
@@ -42,8 +42,8 @@
 
 **Severity パーサー（[Severity の抽出ルール](../specs/severity-parser.md#severity-の抽出ルール) 参照）:**
 - [ ] 実際の Codex インラインコメント原文を取得し、正規表現でパースできることを確認する
-- [ ] GitHub API レスポンス（`body` フィールド）をそのまま保存し、パーサーのテストケースとする
-- [ ] Codex インラインコメント原文を GitHub Actions Artifact として保存するステップを追加する
+- [x] GitHub API レスポンス（`body` フィールド）由来の匿名化 fixture を保存し、パーサーのテストケースとする
+- [x] Codex インラインコメント原文を GitHub Actions Artifact として保存するステップを追加する
 
 **Workflow 動作:**
 - [ ] `issue_comment` トリガーで PR ブランチの checkout・push が正常に動作することを確認する

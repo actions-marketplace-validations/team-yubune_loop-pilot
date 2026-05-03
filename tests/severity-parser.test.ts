@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import codexFixtures from "./fixtures/codex-inline-comments.json";
 import { parseSeverity } from "../src/severity-parser";
 
 describe("parseSeverity", () => {
@@ -59,6 +60,14 @@ describe("parseSeverity", () => {
     expect(result.title).toBe("Some text with P0 in the middle");
   });
 
+  it("does not suppress fallback P0/P1 matches when no-findings wording appears only in the body", () => {
+    const raw =
+      "Review details\n\nThe previous run reported no issues, but this comment flags a P1 regression.";
+    const result = parseSeverity(raw);
+    expect(result.severity).toBe("P1");
+    expect(result.title).toBe("Review details");
+  });
+
   // --- No match ---
 
   it('returns null severity for "No severity badge at all"', () => {
@@ -96,5 +105,14 @@ describe("parseSeverity", () => {
     const raw = "P0 Title\n\nUseful? React with 👍 / 👎.";
     const result = parseSeverity(raw);
     expect(result.body).toBe("");
+  });
+
+  describe("Codex inline comment fixtures", () => {
+    for (const fixture of codexFixtures) {
+      it(`parses ${fixture.name}`, () => {
+        const result = parseSeverity(fixture.body);
+        expect(result).toEqual(fixture.expected);
+      });
+    }
   });
 });
