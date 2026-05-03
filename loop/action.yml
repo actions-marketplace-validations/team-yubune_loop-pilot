@@ -19,11 +19,11 @@ inputs:
     required: false
     default: ""
   trigger-comment-id:
-    description: "ID of the Codex summary comment that triggered this run"
+    description: "ID of the Codex summary comment or PR review that triggered this run"
     required: false
     default: "0"
   trigger-comment-body:
-    description: "Body of the Codex summary comment that triggered this run"
+    description: "Body of the Codex summary comment or PR review that triggered this run"
     required: false
     default: ""
   max-review-iterations:

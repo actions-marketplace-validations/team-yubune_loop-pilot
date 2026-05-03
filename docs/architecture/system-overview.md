@@ -50,7 +50,7 @@ Pull Request に対して、以下の自動ループを実現する。
 | `CODEX_BOT_LOGIN` | Codex bot のログイン名 | `chatgpt-codex-connector[bot]` | `chatgpt-codex-connector[bot]` |
 | `STABILIZE_INTERVAL_SECONDS` | セーフガードのポーリング間隔（秒） | `10` | `10` |
 | `STABILIZE_COUNT` | コメント数安定と判定する連続一致回数 | `3` | `3` |
-| `CODEX_REVIEW_MARKER` | Codex 総評コメントの検知文言 | `Codex Review` | `Codex Review` |
+| `CODEX_REVIEW_MARKER` | Codex 総評レビュー/コメントの検知文言 | `Codex Review` | `Codex Review` |
 
 GitHub Actions workflow の `env` または Repository variables で設定する。
 
@@ -92,7 +92,7 @@ env:
 
 - **Codex はレビュー専任（bot: `chatgpt-codex-connector[bot]`）**
 - **Claude は修正専任（Claude API Opus を GitHub Actions 内で tool use 呼び出し）**
-- **Codex の総評コメント（`issue_comment`）をトリガーに Workflow B を起動**
+- **Codex の総評レビュー（`pull_request_review`）を主トリガーに Workflow B を起動し、互換用に `issue_comment` も許可**
 - **インラインコメント（`pull_request_review_comment`）を GitHub API で一括取得し、P0/P1 を抽出**
 - **Claude にはファイル単位で `edit_file` ツール呼び出しによる構造化 edit を返させる**
 - **レビュー受信後に `DEBOUNCE_SECONDS` 秒待機してから集約する（最適値は PoC で検証）**

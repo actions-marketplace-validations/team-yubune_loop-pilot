@@ -40,25 +40,43 @@ if: github.event.pull_request.draft == false && github.event.pull_request.head.r
 **タイムアウト:** job に `timeout-minutes: 30` を設定する（デバウンス待機 + Claude API 呼び出し + テスト実行の合計時間。プロジェクトのテスト時間に応じて調整する）。
 
 トリガー:
-- `issue_comment` の `created` イベント（Codex の総評コメントを検知）
+- `pull_request_review` の `submitted` イベント（Codex のレビュー投稿を検知）
+- 互換用に `issue_comment` の `created` イベント（Codex の総評コメント）も許可する
 
 ```yaml
 on:
   issue_comment:
     types: [created]
+  pull_request_review:
+    types: [submitted]
 ```
 
 前提条件（job の `if`）:
 ```yaml
 if: >
-  github.event.issue.pull_request &&
   (
-    github.event.comment.user.login == 'chatgpt-codex-connector[bot]' ||
-    (vars.CODEX_BOT_LOGIN != '' && github.event.comment.user.login == vars.CODEX_BOT_LOGIN)
-  ) &&
+    github.event_name == 'issue_comment' &&
+    github.event.issue.pull_request &&
+    (
+      github.event.comment.user.login == 'chatgpt-codex-connector[bot]' ||
+      (vars.CODEX_BOT_LOGIN != '' && github.event.comment.user.login == vars.CODEX_BOT_LOGIN)
+    ) &&
+    (
+      contains(github.event.comment.body, 'Codex Review') ||
+      (vars.CODEX_REVIEW_MARKER != '' && contains(github.event.comment.body, vars.CODEX_REVIEW_MARKER))
+    )
+  ) ||
   (
-    contains(github.event.comment.body, 'Codex Review') ||
-    (vars.CODEX_REVIEW_MARKER != '' && contains(github.event.comment.body, vars.CODEX_REVIEW_MARKER))
+    github.event_name == 'pull_request_review' &&
+    github.event.review.state == 'commented' &&
+    (
+      github.event.review.user.login == 'chatgpt-codex-connector[bot]' ||
+      (vars.CODEX_BOT_LOGIN != '' && github.event.review.user.login == vars.CODEX_BOT_LOGIN)
+    ) &&
+    (
+      contains(github.event.review.body, 'Codex Review') ||
+      (vars.CODEX_REVIEW_MARKER != '' && contains(github.event.review.body, vars.CODEX_REVIEW_MARKER))
+    )
   )
 ```
 
@@ -68,9 +86,9 @@ if: >
 > - **空文字列の危険:** `contains(any_string, '')` は **常に true** を返す。`vars.CODEX_REVIEW_MARKER` は `vars.CODEX_REVIEW_MARKER != ''` を確認してから `contains()` に渡すこと。bot 名も `vars.CODEX_BOT_LOGIN != ''` を確認してから比較すること
 > - Repository variables 未設定時も fallback の `chatgpt-codex-connector[bot]` と `Codex Review` だけで判定する。設定時は fallback と設定値のどちらも許可する
 
-- PR に紐づく issue comment であること
-- Codex bot のコメントであること（`CODEX_BOT_LOGIN` Repository variable で制御）
-- 総評コメント（`CODEX_REVIEW_MARKER` Repository variable の文言を含む）であること
+- PR に紐づく `issue_comment` または `pull_request_review` であること
+- Codex bot の投稿であること（`CODEX_BOT_LOGIN` Repository variable で制御）
+- レビュー本文または総評コメントに `CODEX_REVIEW_MARKER` Repository variable の文言を含むこと
 
 推奨 Repository variables:
 
@@ -79,30 +97,31 @@ if: >
 
 > **注意:** bot 名・検知文言は OpenAI 側のアップデートで変更される可能性がある。Repository variables（`CODEX_BOT_LOGIN`, `CODEX_REVIEW_MARKER`）で外部化しているため、変更時は variables を更新するだけで workflow の修正は不要。未設定または空文字の場合でも fallback 条件だけで評価され、空文字 `contains()` は実行されない。
 
-### `issue_comment` トリガー特有の注意点
+### review / issue_comment トリガー特有の注意点
 
-`issue_comment` でトリガーされた workflow は **デフォルトブランチ（main/master）のコード** を checkout する。PR ブランチのコードを操作するには、明示的に PR の head ref を指定する必要がある。
+`pull_request_review` / `issue_comment` でトリガーされた workflow は、PR ブランチを自動 checkout しない。PR ブランチのコードを操作するには、明示的に PR の head ref を指定する必要がある。
 
 ```yaml
 - name: Get PR head ref
   id: pr
   run: |
-    PR_DATA=$(gh api "/repos/${{ github.repository }}/pulls/${{ github.event.issue.number }}")
+    PR_DATA=$(gh api "/repos/${{ github.repository }}/pulls/${PR_NUM}")
     echo "head_ref=$(echo "$PR_DATA" | jq -r '.head.ref')" >> "$GITHUB_OUTPUT"
     echo "head_sha=$(echo "$PR_DATA" | jq -r '.head.sha')" >> "$GITHUB_OUTPUT"
   env:
     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    PR_NUM: ${{ github.event.issue.number || github.event.pull_request.number }}
 
 - uses: actions/checkout@v4
   with:
     ref: ${{ steps.pr.outputs.head_ref }}
 ```
 
-> **注意:** `github.event.issue.pull_request` にはブランチ情報が含まれないため、GitHub API で PR 情報を別途取得する必要がある。
+> **注意:** `issue_comment` では `github.event.issue.pull_request` にブランチ情報が含まれず、`pull_request_review` でも fork guard 用の head repo 判定を統一したいため、GitHub API で PR 情報を別途取得する。
 
 Workflow B は GitHub API で取得した `.head.repo.full_name` が空または `github.repository` と異なる場合、fork PR または source repo 不明として `Run auto-fix loop` より前に停止する。`pr-head-ref` は action input として渡した後、action 側で ref 名の危険文字を検査してから checkout する。
 
-> **注意: push 権限について:** `issue_comment` トリガーで発行される `GITHUB_TOKEN` は、デフォルトブランチのコンテキストで生成される。PR ブランチにブランチ保護ルール（required reviews, status checks 等）が設定されている場合、`GITHUB_TOKEN` による push がブロックされる可能性がある。この場合、以下のいずれかで対処する:
+> **注意: push 権限について:** PR ブランチにブランチ保護ルール（required reviews, status checks 等）が設定されている場合、`GITHUB_TOKEN` による push がブロックされる可能性がある。この場合、以下のいずれかで対処する:
 > - ブランチ保護ルールで **"Allow specified actors to bypass required pull requests"** に GitHub Actions bot を追加する
 > - `GITHUB_TOKEN` の代わりに GitHub App トークンまたは Fine-grained PAT を使用する（`permissions: contents: write` が必要）
 > - PoC 段階ではブランチ保護ルールを緩めるか無効化する
@@ -114,7 +133,7 @@ Workflow B は GitHub API で取得した `.head.repo.full_name` が空または
 **Phase 1: レビュー受信・集約**
 - hidden comment から状態を読み込む
 - **ガード条件:** `status` が `fixing` または `stopped` または `done` の場合は即スキップして終了（`fixing`: 先行 workflow と競合するため。`stopped` / `done`: 停止・完了後に Codex の遅延コメントが到着しても再起動しないため）
-- `last_processed_review_id`（総評コメントの ID）と比較し、同一レビューは処理しない
+- `last_processed_review_id`（trigger comment/review の ID）と比較し、同一レビューは処理しない
 - `DEBOUNCE_SECONDS` 待機（インラインコメントが全て出揃うのを待つ）
 - GitHub API（`GET /repos/{owner}/{repo}/pulls/{number}/comments`）で PR の review comments を取得
 - `chatgpt-codex-connector[bot]` のコメントのみフィルタ
@@ -172,8 +191,7 @@ PR ごとに同時実行を防ぐ。
 
 ```yaml
 concurrency:
-  # Workflow B のトリガーは issue_comment のため、pull_request オブジェクトは存在しない
-  group: pr-${{ github.event.issue.number }}-auto-fix
+  group: pr-${{ github.event.issue.number || github.event.pull_request.number }}-auto-fix
   cancel-in-progress: false
 ```
 
@@ -182,8 +200,8 @@ concurrency:
 #### 3. actor フィルタ
 - **`chatgpt-codex-connector[bot]`** のコメントのみ対象
 - Claude bot（GitHub Actions bot）のコメントや push では起動しない
-- 判定: `github.event.comment.user.login == 'chatgpt-codex-connector[bot]'` または、非空の `vars.CODEX_BOT_LOGIN` と一致
-- 総評コメントであることを `contains(github.event.comment.body, 'Codex Review')` または、非空の `vars.CODEX_REVIEW_MARKER` で確認
+- 判定: `github.event.comment.user.login` または `github.event.review.user.login` が `chatgpt-codex-connector[bot]`、または非空の `vars.CODEX_BOT_LOGIN` と一致
+- trigger body に `contains(..., 'Codex Review')` または、非空の `vars.CODEX_REVIEW_MARKER` を含むことを確認
 
 #### 4. workflow の責務分離
 - **Workflow A:** PR 初期化 + 初回 `@codex review`

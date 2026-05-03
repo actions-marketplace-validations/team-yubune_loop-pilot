@@ -11,14 +11,28 @@ describe("Workflow A trigger guard", () => {
 });
 
 describe("Workflow B trigger guard", () => {
+  it("starts from Codex pull request review submissions", () => {
+    expect(loopWorkflow).toContain("pull_request_review:");
+    expect(loopWorkflow).toContain("types: [submitted]");
+    expect(loopWorkflow).toContain("github.event_name == 'pull_request_review'");
+    expect(loopWorkflow).toContain("github.event.review.user.login == 'chatgpt-codex-connector[bot]'");
+    expect(loopWorkflow).toContain("contains(github.event.review.body, 'Codex Review')");
+  });
+
+  it("uses the PR number from either issue_comment or pull_request_review events", () => {
+    expect(loopWorkflow).toContain("github.event.issue.number || github.event.pull_request.number");
+  });
+
   it("does not compare CODEX_BOT_LOGIN unless the variable is non-empty", () => {
     expect(loopWorkflow).toContain("vars.CODEX_BOT_LOGIN != ''");
     expect(loopWorkflow).toContain("github.event.comment.user.login == vars.CODEX_BOT_LOGIN");
+    expect(loopWorkflow).toContain("github.event.review.user.login == vars.CODEX_BOT_LOGIN");
   });
 
   it("does not call contains() with CODEX_REVIEW_MARKER unless the variable is non-empty", () => {
     expect(loopWorkflow).toContain("vars.CODEX_REVIEW_MARKER != ''");
     expect(loopWorkflow).toContain("contains(github.event.comment.body, vars.CODEX_REVIEW_MARKER)");
+    expect(loopWorkflow).toContain("contains(github.event.review.body, vars.CODEX_REVIEW_MARKER)");
   });
 
   it("keeps explicit fallback checks for the default Codex bot and review marker", () => {

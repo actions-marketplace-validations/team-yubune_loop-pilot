@@ -25,7 +25,7 @@
 - [ ] `@codex review` メンション形式で Codex が起動するか確認
 - [ ] 総評コメント / インラインコメントの投稿順序を確認
 - [x] Codex インラインコメントの原文を Artifact として保存する step を追加し、匿名化 fixture でパーサーのテストケースにする
-- [ ] `issue_comment` トリガーでの `GITHUB_TOKEN` 権限を確認
+- [ ] `pull_request_review` / `issue_comment` トリガーでの `GITHUB_TOKEN` 権限を確認
 - [ ] デバウンス時間の最適値を検証
 
 ---
@@ -35,9 +35,9 @@
 > PoC 段階で必ず確認・記録すべき事項を集約したリスト。
 
 **Codex のイベント発行パターン（[Severity パーサー仕様](../specs/severity-parser.md) 参照）:**
-- [ ] `chatgpt-codex-connector[bot]` の実際のイベント発行パターンを確認する（総評コメント・インラインコメントの API 種別とイベント型）
-- [ ] 総評コメント（`issue_comment`）とインラインコメント（`pull_request_review_comment`）の投稿順序を確認する
-- [ ] 総評コメントが来た時点で全インラインコメントが既に投稿済みかを確認する
+- [x] `chatgpt-codex-connector[bot]` の実際のイベント発行パターンを確認する（PR #4 では `pull_request_review` + inline `pull_request_review_comment`）
+- [x] 実測イベント形式に合わせ、Workflow B が `pull_request_review.submitted` を受け付けることを確認する
+- [ ] `pull_request_review` が来た時点で全インラインコメントが既に投稿済みかを確認する
 - [ ] 上記が安定していれば `DEBOUNCE_SECONDS=0` への短縮を検討する
 
 **Severity パーサー（[Severity の抽出ルール](../specs/severity-parser.md#severity-の抽出ルール) 参照）:**
@@ -46,7 +46,8 @@
 - [x] Codex インラインコメント原文を GitHub Actions Artifact として保存するステップを追加する
 
 **Workflow 動作:**
-- [ ] `issue_comment` トリガーで PR ブランチの checkout・push が正常に動作することを確認する
+- [ ] `pull_request_review` トリガーで PR ブランチの checkout・push が正常に動作することを確認する
+- [ ] 互換用の `issue_comment` トリガーで PR ブランチの checkout・push が正常に動作することを確認する
 - [ ] `concurrency` 制御が期待通りに動作することを確認する
 - [x] Repository variables（`CODEX_BOT_LOGIN`, `CODEX_REVIEW_MARKER`）未設定時も fallback 条件だけで安全に判定されることを確認する
 - [ ] Repository variables（`CODEX_BOT_LOGIN`, `CODEX_REVIEW_MARKER`）の推奨値が設定されていることを実環境で確認する
