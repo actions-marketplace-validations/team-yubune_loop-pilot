@@ -30,6 +30,7 @@ if: github.event.pull_request.draft == false && github.event.pull_request.head.r
 - draft PR では自動レビューを起動しない。作成途中のコードに対して Codex レビュー → Claude 修正が走ることを防ぐ
 - `ready_for_review` イベントは draft → ready 変換時に発火するため、draft 解除後に初回レビューが起動する
 - fork PR では自動レビューを起動しない。外部コードに対して token を持つ auto-fix loop を開始しないため
+- 本番移植時は、さらにラベル付き PR のみ auto-review を起動する opt-in 運用を TY-137 で検討する
 
 役割:
 - hidden comment で状態を初期化（`status: initialized`, `iteration_count: 0`）
@@ -207,6 +208,8 @@ Workflow B は GitHub API で取得した `.head.repo.full_name` が空または
 - `issue_comment` トリガーでの done 終了は確認済み。ただし、互換用 `issue_comment` 経由で修正 commit/push まで進むケースは未検証
 - `DEBOUNCE_SECONDS=0` は未検証。PR #7 ではデフォルト待機で安定動作を確認した
 - `concurrency` の多重 review 競合は設計上の対策のみで、実 PR で意図的な競合は発生させていない
+- 複数 Codex 指摘を同時に受けた E2E は未検証。TY-138 で統合テストを追加する
+- 本番で `issue_comment` 互換 trigger を正式対応にするか、`pull_request_review` 主体に限定するかは TY-142 で判断する
 
 ---
 

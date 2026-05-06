@@ -15,36 +15,57 @@ PR #7 / TY-11 で、同一リポジトリ PR に対する Workflow A/B の主要
 
 ---
 
+## 追加 Issue 化した本番移植前タスク
+
+| Issue | 優先度 | 分類 | 概要 |
+|------|--------|------|------|
+| TY-137 | High | 必須 / 仕様判断 | ラベル付き PR のみ auto-review を起動する opt-in 運用 |
+| TY-138 | High | 必須 / テスト | 複数 Codex 指摘を受けた場合の auto-fix loop テスト |
+| TY-139 | High | 必須 / 実装 | hidden comment の楽観ロック + TOCTOU 対策 |
+| TY-140 | High | 必須 / 運用判断 | Claude API retry / cost limit / spending guard |
+| TY-143 | High | 必須 / 認証判断 | 本番用 token / GitHub App / machine user 運用 |
+| TY-145 | High | 必須 / E2E 検証 | 外部 fork PR と branch protection 下での本番 E2E |
+| TY-141 | Medium | 条件付き必須 / 仕様判断 | large file と cross-file finding の対応方針 |
+| TY-142 | Medium | 仕様判断 | debounce / concurrency / `issue_comment` 互換 trigger 方針 |
+| TY-144 | Medium | 運用改善 | `/reset-review` と hidden state recovery |
+
+High は本番移植前に完了または明確な保留判断が必要な項目。Medium は初期移植では手動運用や制限付き運用で代替できるが、移植先の規模・運用要件によって High に上げる。
+
+---
+
 ## 設計上の修正が必要な項目（本番移植前に必須）
 
-- [ ] インラインコメントの取得範囲フィルタの検証（`created_at` ベースのフィルタが期待通り動作するか）
-- [ ] Claude API エラー時のリトライ戦略の実装・チューニング
-- [ ] `CHECK_COMMAND` の各プロジェクトへの適用（`package.json` の `check` スクリプト整備）
-- [ ] Claude API 呼び出しのバッチ化検討（findings が少ないファイル同士をまとめて1回の API 呼び出しで処理し、コスト効率を改善する。閾値例: 1ファイルあたり findings 1件以下のファイルはバッチ化対象）
-- [ ] hidden comment の競合対策（楽観ロック + TOCTOU 対策の実装。方針は [状態管理](../architecture/flow-and-state.md#hidden-comment-の競合書き込みリスク) に記載済み。PoC では concurrency 制御で代替）
-- [ ] large file の扱いを決める。PoC では文字数ベースの `MAX_INPUT_TOKENS_PER_FILE` 超過時にスキップし、chunking は未実装
-- [ ] cross-file finding の扱いを決める。PoC はファイル単位で閉じた修正のみ対応
-- [ ] 互換用 `issue_comment` トリガー経由で修正 commit/push まで進むケースを検証する、または本番では `pull_request_review` のみを正式対応にする
-- [ ] `DEBOUNCE_SECONDS=0` への短縮可否を決める。PR #7 ではデフォルト待機での安定動作のみ確認済み
-- [ ] `concurrency` キューの実運用リスクを判断する。GitHub Actions の待機キュー制約により、短時間の複数 review では中間 run が置き換えられる可能性がある
+- [ ] ラベル付き PR のみ auto-review を起動するか決め、実装する（TY-137）
+- [ ] 複数 Codex 指摘を受けた場合の auto-fix loop テストを追加する（TY-138）
+- [ ] インラインコメントの取得範囲フィルタの検証（`created_at` ベースのフィルタが期待通り動作するか。TY-138 の複数指摘テストに含める）
+- [ ] Claude API エラー時のリトライ戦略の実装・チューニング（TY-140）
+- [ ] `CHECK_COMMAND` の各プロジェクトへの適用（`package.json` の `check` スクリプト整備。TY-145 の移植先 E2E で確認）
+- [ ] Claude API 呼び出しのバッチ化検討（findings が少ないファイル同士をまとめて1回の API 呼び出しで処理し、コスト効率を改善する。TY-140）
+- [ ] hidden comment の競合対策（楽観ロック + TOCTOU 対策の実装。方針は [状態管理](../architecture/flow-and-state.md#hidden-comment-の競合書き込みリスク) に記載済み。PoC では concurrency 制御で代替。TY-139）
+- [ ] large file の扱いを決める。PoC では文字数ベースの `MAX_INPUT_TOKENS_PER_FILE` 超過時にスキップし、chunking は未実装（TY-141）
+- [ ] cross-file finding の扱いを決める。PoC はファイル単位で閉じた修正のみ対応（TY-141）
+- [ ] 互換用 `issue_comment` トリガー経由で修正 commit/push まで進むケースを検証する、または本番では `pull_request_review` のみを正式対応にする（TY-142）
+- [ ] `DEBOUNCE_SECONDS=0` への短縮可否を決める。PR #7 ではデフォルト待機での安定動作のみ確認済み（TY-142）
+- [ ] `concurrency` キューの実運用リスクを判断する。GitHub Actions の待機キュー制約により、短時間の複数 review では中間 run が置き換えられる可能性がある（TY-142 / TY-139）
 
 ---
 
 ## 運用・セキュリティの項目
 
-- [ ] デバウンス方式の見直し（`sleep` → イベント駆動 or 外部スケジューラ）
+- [ ] デバウンス方式の見直し（`sleep` → イベント駆動 or 外部スケジューラ。TY-142）
 - [x] Codex のレビュー形式に合わせた severity パーサーの厳密化（PoC で取得した実コメントを基に）
 - [x] `Codex Review` 文言の環境変数化（`CODEX_REVIEW_MARKER`）— PoC 段階で対応済み
 - [x] Codex bot 名 `chatgpt-codex-connector[bot]` の環境変数化（`CODEX_BOT_LOGIN`）— PoC 段階で対応済み
-- [ ] Bot Token のスコープ最小化と Fine-grained PAT の設定
-- [ ] `CODEX_REVIEW_REQUEST_TOKEN` の運用方式決定（個人 PAT 継続ではなく、専用 machine user または GitHub App token への置き換えを検討）
+- [ ] Bot Token のスコープ最小化と Fine-grained PAT の設定（TY-143）
+- [ ] `CODEX_REVIEW_REQUEST_TOKEN` の運用方式決定（個人 PAT 継続ではなく、専用 machine user または GitHub App token への置き換えを検討。TY-143）
 - [x] Fork PR 起動防止の実装
-- [ ] 外部 fork PR を使った起動防止 E2E 検証
-- [ ] `MAX_REVIEW_ITERATIONS` の適正値決定（コスト試算に基づく。20以上も検討）
-- [ ] `/reset-review` 等のリカバリコマンド実装
-- [ ] hidden comment 消失時の自動リカバリ機構
-- [ ] GitHub API レート制限の考慮（1 iteration あたり最低4回の API コール × 20 iteration = 80回。複数 PR が並行する場合は 1時間あたり1,000リクエスト制限に注意）
-- [ ] Slack 通知等の運用連携
+- [ ] 外部 fork PR を使った起動防止 E2E 検証（TY-145）
+- [ ] branch protection / required checks 下での commit/push 可否確認（TY-145）
+- [ ] `MAX_REVIEW_ITERATIONS` の適正値決定（コスト試算に基づく。20以上も検討。TY-140）
+- [ ] `/reset-review` 等のリカバリコマンド実装（TY-144）
+- [ ] hidden comment 消失時の自動リカバリ機構（TY-144）
+- [ ] GitHub API レート制限の考慮（1 iteration あたり最低4回の API コール × 20 iteration = 80回。複数 PR が並行する場合は 1時間あたり1,000リクエスト制限に注意。TY-140 / TY-142）
+- [ ] Slack 通知等の運用連携（PoC 完了条件からは除外。必要になった時点で別 Issue 化）
 
 ---
 
@@ -57,6 +78,15 @@ PR #7 / TY-11 で、同一リポジトリ PR に対する Workflow A/B の主要
 - [x] P0/P1 が解消された場合、hidden comment が `done / no_findings` になる
 
 本番リポジトリでは branch protection、required checks、organization policy が異なる可能性があるため、上記は移植先でも最小 PR で再確認する。
+
+## PoC 完了条件から外す項目
+
+以下は PoC の完了条件には含めず、本番移植または移植後の運用改善として扱う。
+
+- Slack 通知、ラベル連携以外の外部連携、管理 UI
+- 外部 DB / 外部キュー化。ただし `concurrency` キュー制約が本番要件に合わない場合は TY-142 で再判断する
+- 完全な cross-file 修正エンジン化。初期移植では TY-141 で手動対応ポリシーまたは限定実装を決める
+- `/reset-review` の完全自動化。初期移植時は手動復旧で代替可能だが、TY-144 で運用改善として追跡する
 
 ---
 
