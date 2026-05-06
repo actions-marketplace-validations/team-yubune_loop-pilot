@@ -2,6 +2,20 @@
 
 > PR に対して Codex がレビューし、Claude が自動修正する自動ループの設計資料。
 
+## 現状ステータス
+
+PoC の主要 E2E は PR #7 / TY-11 で確認済み。
+
+- Codex review 起動
+- Workflow B 起動
+- Claude 修正
+- `CHECK_COMMAND`
+- commit/push
+- 再 `@codex review`
+- P0/P1 なしの `done` 終了
+
+本番移植前の残課題は [本番移植チェックリスト](checklists/production-migration.md) に集約する。次に読むべき資料は、現状確認なら [PoC チェックリスト](checklists/poc-checklist.md)、移植判断なら [本番移植チェックリスト](checklists/production-migration.md)。
+
 ## ドキュメント構成
 
 ### Architecture — 全体設計

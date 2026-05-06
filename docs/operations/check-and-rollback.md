@@ -4,6 +4,8 @@
 
 Claude が修正を適用した後に実行する検証コマンドは `CHECK_COMMAND` 環境変数で指定する。
 
+**PoC 実測:** PR #7 の Workflow B run `25434230427` では、依存関係セットアップ後に `CHECK_COMMAND` が成功し、その後 commit/push された。TY-40 で `CHECK_COMMAND` 前の依存関係セットアップを追加済み。
+
 ### コマンド設計
 
 - 単一のコマンドで test / lint / typecheck をまとめて実行する想定（例: `npm run check` が内部で `tsc --noEmit && eslint . && vitest run` を実行する）
@@ -30,6 +32,8 @@ Claude が修正を適用した後に実行する検証コマンドは `CHECK_CO
 
 - `status: stopped`, `stop_reason: test_failure` で停止する
 - PR に失敗内容（コマンド出力の冒頭 20行 + 末尾 50行）をコメントとして投稿する。冒頭を含めるのは、テストフレームワークによってはエラーサマリーが出力の先頭に表示されるため
+
+**PoC 実測:** PR #7 の途中検証で依存関係未セットアップにより `CHECK_COMMAND` が失敗し、変更はロールバックされ停止コメントが投稿された。その後 TY-40 で依存関係セットアップを追加し、PR #7 の再検証では成功した。
 
 ### 出力のサニタイズ
 

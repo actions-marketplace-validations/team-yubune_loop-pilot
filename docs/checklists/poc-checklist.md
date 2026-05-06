@@ -3,6 +3,8 @@
 ## PoC 実装チェックリスト
 
 > **PoC で実装・検証すべき項目の一覧。** 詳細は各リンク先ドキュメントを参照。
+>
+> チェック済みは「PoC 実装として利用可能な状態」を示す。実 PR で踏んだ項目と、ユニットテスト/設計確認までの項目は下の「PoC 検証事項」で分けて記録する。
 
 ### 実装必須
 
@@ -11,11 +13,11 @@
 - [x] Severity パーサー（P0/P1 抽出の正規表現） → [Severity の抽出ルール](../specs/severity-parser.md#severity-の抽出ルール)
 - [x] `@codex review` 投稿専用の接続済みユーザー PAT（`CODEX_REVIEW_REQUEST_TOKEN`）を Workflow A/B で使用し、未設定時は `GITHUB_TOKEN` に fallback → [Codex review request token](../architecture/event-design.md#codex-review-request-token)
 - [x] Claude API 呼び出し（`edit_file` tool use） → [Claude 修正エンジン](../specs/claude-fix-engine.md)
-- [ ] `edit_file` 適用ロジック（逆順適用・空白正規化・複数マッチ・再試行） → [edit 適用ロジック](../specs/claude-fix-engine.md#edit-適用ロジック)
+- [x] `edit_file` 適用ロジック（逆順適用・空白正規化・複数マッチ） → [edit 適用ロジック](../specs/claude-fix-engine.md#edit-適用ロジック)
 - [x] `CHECK_COMMAND` 実行 + 失敗時ロールバック → [検証コマンドとロールバック](../operations/check-and-rollback.md)
 - [x] hidden comment による状態管理 → [状態管理](../architecture/flow-and-state.md#状態管理)
 - [x] `MAX_REVIEW_ITERATIONS` による停止制御 → [停止条件](../operations/stop-and-recovery.md#停止条件)
-- [ ] 同一指摘ループ検知 → [ループ検知](../specs/loop-detection.md)
+- [x] 同一指摘ループ検知 → [ループ検知](../specs/loop-detection.md)
 - [x] Fork PR からの起動防止 → [セキュリティ](../operations/security.md#fork-pr-からの起動防止)
 - [x] Repository variables 未設定時も空文字 `contains()` で Workflow B が誤起動しない trigger guard → [イベント設計](../architecture/event-design.md#workflow-b-codex-レビュー受信--claude-修正auto-review-loopyml)
 
@@ -29,6 +31,17 @@
 - [x] Codex インラインコメントの原文を Artifact として保存する step を追加し、匿名化 fixture でパーサーのテストケースにする
 - [x] `pull_request_review` / `issue_comment` トリガーでの `GITHUB_TOKEN` 権限を確認
 - [ ] デバウンス時間の最適値を検証
+
+### 未検証・本番移植前に判断する項目
+
+- `DEBOUNCE_SECONDS=0` への短縮可否は未検証。PR #7 ではデフォルト待機で安定動作を確認したのみ。
+- 互換用 `issue_comment` トリガーでは done 終了を確認済みだが、同トリガー経由で修正 commit/push まで進むケースは未検証。
+- `concurrency` の多重 review キュー挙動は実装方針を docs に記録済みだが、実 PR で競合を発生させた検証は未実施。
+- `edit_file` の空白正規化・複数マッチ・逆順適用はユニットテスト済み。実 PR #7 で踏んだ自動修正は単一 edit。
+- 同一指摘ループ検知はユニットテスト済み。実 PR #7 では no-edit 停止時の failed attempt 消費を修正し、最終的にはループ停止ではなく done 終了を確認した。
+- fork PR からの起動防止は workflow/action guard として実装済み。本リポジトリで外部 fork PR を作成しての E2E 検証は未実施。
+- large file は `MAX_INPUT_TOKENS_PER_FILE` の文字数ベース概算でスキップする実装。chunking は未実装で、本番移植前の検討事項。
+- stabilize safeguard は実装・ユニットテスト済み。PR #7 では inline comment が取得できたため、追加 polling が必要なケースは踏んでいない。
 
 ---
 
@@ -71,6 +84,10 @@
 - [ ] `concurrency` 制御が期待通りに動作することを確認する
 - [x] Repository variables（`CODEX_BOT_LOGIN`, `CODEX_REVIEW_MARKER`）未設定時も fallback 条件だけで安全に判定されることを確認する
 - [x] Repository variables（`CODEX_BOT_LOGIN`, `CODEX_REVIEW_MARKER`）の推奨値が設定されていることを実環境で確認する
+
+**検証コマンド:**
+- [x] `npm run check`（2026-05-06, 12 files / 88 tests）
+- [x] `git diff -- docs` で TY-12 の docs 差分を確認
 
 ---
 

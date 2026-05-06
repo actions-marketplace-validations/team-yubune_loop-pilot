@@ -19,6 +19,8 @@ Pull Request に対して、以下の自動ループを実現する。
 このリポジトリは **PoC（検証用）** である。
 まず動作することを確認し、検証済みのロジックを本プロジェクトに移植する。
 
+PR #7 / TY-11 で、同一リポジトリ PR に対する Workflow A/B の主要 E2E は確認済み。残る作業は本番移植前の運用・セキュリティ・コスト判断であり、[本番移植チェックリスト](../checklists/production-migration.md) に集約する。
+
 したがって:
 - 動作確認を優先する
 - 過度な堅牢性・最適化は後回しでよい
@@ -98,7 +100,7 @@ env:
 - **Codex の総評レビュー（`pull_request_review`）を主トリガーに Workflow B を起動し、互換用に `issue_comment` も許可**
 - **インラインコメント（`pull_request_review_comment`）を GitHub API で一括取得し、P0/P1 を抽出**
 - **Claude にはファイル単位で `edit_file` ツール呼び出しによる構造化 edit を返させる**
-- **レビュー受信後に `DEBOUNCE_SECONDS` 秒待機してから集約する（最適値は PoC で検証）**
+- **レビュー受信後に `DEBOUNCE_SECONDS` 秒待機してから集約する（PR #7 ではデフォルト値で安定動作を確認。0秒化は未検証）**
 - **Claude 修正後に `@codex review` を再実行（`CODEX_REVIEW_REQUEST_TOKEN` 設定時は接続済みユーザー PAT で投稿）**
 - **P0 / P1 がなくなるか `MAX_REVIEW_ITERATIONS` 回到達で終了**
 - **状態は PR の hidden comment で管理（status の遷移は [状態遷移図](flow-and-state.md#状態遷移図) を参照）**
