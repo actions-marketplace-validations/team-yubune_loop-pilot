@@ -54,6 +54,8 @@ Recommendation: manual intervention required.
 
 PR #7 では人間が再度 `@codex review` を投稿して検証を再開する手順を複数回実施した。本番ではこの手順を `/reset-review` などの明示コマンドへ寄せるかを TY-13 で判断する。
 
+**後続 Issue:** `/reset-review` と hidden state recovery は TY-144 で追跡する。初期移植では手動復旧で代替可能だが、`MAX_REVIEW_ITERATIONS` 到達、state corruption、hidden comment 消失時に人間が hidden JSON を直接編集しなくて済む状態を目標にする。
+
 ---
 
 ## 関連ドキュメント
