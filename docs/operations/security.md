@@ -32,14 +32,33 @@ PR #7 の実環境では上記値で Codex review を検知できた。未設定
 - fallback の `chatgpt-codex-connector[bot]` と `Codex Review` は明示的に別条件として残す
 - 通常ユーザーの PR コメント/レビューや、Codex bot 以外の投稿では Workflow B が起動しない
 
-## ラベル付き PR のみ起動する運用
+## ラベル付き PR のみ起動する運用（default-strict + full-auto opt-out）
 
-本番移植時は、意図しない PR で Codex review / Claude auto-fix loop が走らないよう、明示ラベル付き PR のみ起動する opt-in 運用を検討する（TY-137）。
+本番リポジトリで意図しない PR に Codex review / Claude auto-fix loop が走らないよう、デフォルトで「`auto-review-fix` ラベルが付いた PR でのみ起動」する仕様（TY-137）。完全自動化したい場合のみ opt-out できる。
 
-**判断事項:**
-- 起動ラベル名（例: `auto-review`）
-- ラベル追加時に初回 `@codex review` を開始するか、PR 作成/ready 時のみ開始するか
-- Workflow B 実行時にも PR の現在ラベルを GitHub API で確認し、ラベルが外れている場合は修正フェーズに進まないこと
+**仕様:**
+- **デフォルト挙動はラベル必須**。Repository variable `AUTO_REVIEW_LABEL` が空 / 未設定なら `auto-review-fix` ラベルを要求する。ラベル名はレビューだけでなく Claude による自動修正までを示すため `auto-review-fix` を採用する
+- カスタムラベル名を使いたい場合は Repository variable `AUTO_REVIEW_LABEL` にラベル名を設定する。ラベル名の変更は variable の値を書き換えるだけで完結し、workflow YAML の修正は不要
+- 完全自動化（label gate を無効化して全 PR で起動）したい場合のみ Repository variable `AUTO_REVIEW_FULL_AUTO=true` を設定する
+- ラベル名は **小文字固定** を推奨する（例: `auto-review-fix`）。Workflow 側の評価と運用手順の認識ずれを避けるため
+- TS 側のラベル比較は case-insensitive だが、運用上の混乱防止のため表示名の揺れ（`Auto-Review-Fix` など）は使わない
+
+**Workflow A（PR 作成 / ready / labeled トリガー）の挙動:**
+- デフォルト（label gate 有効）: ラベル未設定の PR が作成・ready になっても hidden comment 作成や `@codex review` 投稿は行わない
+- 後から起動ラベルを付けた瞬間（`pull_request.labeled`）に初回 `@codex review` が起動する
+- 無関係なラベルが追加されただけでは起動しない（追加されたラベルが要求ラベルと一致する場合のみ）
+- `AUTO_REVIEW_FULL_AUTO=true`（label gate 無効）時は `labeled` イベントを `if` で除外する。`main-init.ts` は state を初期化して `@codex review` を再投稿する設計のため、ラベル編集のたびに重複レビューが走らないようにするため
+- `AUTO_REVIEW_FULL_AUTO=true` の間は、ラベルの付け外しによる開始/停止はできない（ラベル操作は制御条件として無視される）
+
+**Workflow B（Codex レビュー受信トリガー）の挙動:**
+- workflow `if` で trigger payload の labels を確認し、ラベルがなければ即スキップ（fast skip）。`AUTO_REVIEW_FULL_AUTO=true` の場合はこの確認をスキップ
+- TS 側でも実行時に `GET /repos/{owner}/{repo}/issues/{pr}/labels` を呼び直し、ラベルが現在も付いているかを再確認する。Codex 投稿後にラベルが外された場合に修正フェーズへ進まないようにするため
+- ラベルが外れている場合は state を更新せずに早期 return する。状態は `waiting_codex` のまま温存され、ラベルを付け直した後に新たな `@codex review` が来れば再開する
+- `AUTO_REVIEW_FULL_AUTO=true` の場合はこの再確認をスキップするため、ラベル外しでの停止はできない
+
+**運用時の注意（Runbook）:**
+- 「ラベルを外したのに止まらない」場合は、`AUTO_REVIEW_FULL_AUTO` が `true` になっていないかを最初に確認する
+- full-auto から停止したい場合は、`AUTO_REVIEW_FULL_AUTO=false` に戻す（または workflow を無効化する）。ラベル操作だけでは停止しない
 
 この制御は fork guard や token 最小権限の代替ではなく、誤起動とコスト発生を抑える追加の安全策として扱う。
 

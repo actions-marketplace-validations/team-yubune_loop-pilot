@@ -13,6 +13,33 @@ describe("Workflow A trigger guard", () => {
     expect(initWorkflow).toContain("codex-review-request-token:");
     expect(initWorkflow).toContain("secrets.CODEX_REVIEW_REQUEST_TOKEN");
   });
+
+  it("listens for the labeled event so adding the gate label can start auto-review", () => {
+    expect(initWorkflow).toContain("types: [opened, ready_for_review, labeled]");
+  });
+
+  it("requires the gate label by default and falls back to 'auto-review-fix'", () => {
+    expect(initWorkflow).toContain(
+      "contains(github.event.pull_request.labels.*.name, vars.AUTO_REVIEW_LABEL || 'auto-review-fix')",
+    );
+  });
+
+  it("opts out of the label gate only when AUTO_REVIEW_FULL_AUTO is exactly 'true'", () => {
+    expect(initWorkflow).toContain("vars.AUTO_REVIEW_FULL_AUTO == 'true'");
+    expect(initWorkflow).toContain("vars.AUTO_REVIEW_FULL_AUTO != 'true'");
+  });
+
+  it("ignores labeled events under full-auto mode (no double-init on label edits)", () => {
+    expect(initWorkflow).toContain(
+      "vars.AUTO_REVIEW_FULL_AUTO == 'true' && github.event.action != 'labeled'",
+    );
+  });
+
+  it("ignores `labeled` events for unrelated labels when the gate is enabled", () => {
+    expect(initWorkflow).toContain(
+      "github.event.label.name == (vars.AUTO_REVIEW_LABEL || 'auto-review-fix')",
+    );
+  });
 });
 
 describe("Workflow B trigger guard", () => {
@@ -48,5 +75,25 @@ describe("Workflow B trigger guard", () => {
   it("keeps explicit fallback checks for the default Codex bot and review marker", () => {
     expect(loopWorkflow).toContain("github.event.comment.user.login == 'chatgpt-codex-connector[bot]'");
     expect(loopWorkflow).toContain("contains(github.event.comment.body, 'Codex Review')");
+  });
+
+  it("requires the gate label by default with 'auto-review-fix' fallback for both event types", () => {
+    expect(loopWorkflow).toContain(
+      "contains(github.event.issue.labels.*.name, vars.AUTO_REVIEW_LABEL || 'auto-review-fix')",
+    );
+    expect(loopWorkflow).toContain(
+      "contains(github.event.pull_request.labels.*.name, vars.AUTO_REVIEW_LABEL || 'auto-review-fix')",
+    );
+  });
+
+  it("opts out of the label gate via AUTO_REVIEW_FULL_AUTO=true", () => {
+    expect(loopWorkflow).toContain("vars.AUTO_REVIEW_FULL_AUTO == 'true'");
+  });
+
+  it("forwards both AUTO_REVIEW_LABEL and AUTO_REVIEW_FULL_AUTO to the loop action", () => {
+    expect(loopWorkflow).toContain("auto-review-label:");
+    expect(loopWorkflow).toContain("vars.AUTO_REVIEW_LABEL || ''");
+    expect(loopWorkflow).toContain("auto-review-full-auto:");
+    expect(loopWorkflow).toContain("vars.AUTO_REVIEW_FULL_AUTO || 'false'");
   });
 });

@@ -11,7 +11,7 @@ name: Auto Review Init
 
 on:
   pull_request:
-    types: [opened, ready_for_review]
+    types: [opened, ready_for_review, labeled]
 
 permissions:
   contents: read
@@ -20,7 +20,24 @@ permissions:
 
 jobs:
   init:
-    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    # Default-strict label gate with full-auto opt-out:
+    #   - vars.AUTO_REVIEW_FULL_AUTO == 'true' → gate disabled, every non-fork ready PR
+    #     triggers init. `labeled` events are ignored so adding any label does NOT reset
+    #     state and re-post `@codex review`.
+    #   - otherwise (default) → PR must carry the gate label
+    #     `vars.AUTO_REVIEW_LABEL || 'auto-review-fix'`. For `labeled` events, the added
+    #     label itself must match the gate label (adding an unrelated label is a no-op).
+    if: >
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        (vars.AUTO_REVIEW_FULL_AUTO == 'true' && github.event.action != 'labeled') ||
+        (
+          vars.AUTO_REVIEW_FULL_AUTO != 'true' &&
+          contains(github.event.pull_request.labels.*.name, vars.AUTO_REVIEW_LABEL || 'auto-review-fix') &&
+          (github.event.action != 'labeled' || github.event.label.name == (vars.AUTO_REVIEW_LABEL || 'auto-review-fix'))
+        )
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
