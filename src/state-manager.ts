@@ -36,6 +36,15 @@ function validateState(obj: unknown): obj is ReviewState {
   if (s.lastCodexReviewReceivedAt !== null && typeof s.lastCodexReviewReceivedAt !== "string") return false;
   if (s.lastFindingsHash !== null && typeof s.lastFindingsHash !== "string") return false;
   if (s.stopReason !== null && typeof s.stopReason !== "string") return false;
+  // previousCheckFailure was added after the initial release; tolerate both
+  // missing and explicit-null/string shapes. Missing is normalized to null below.
+  if (
+    "previousCheckFailure" in s &&
+    s.previousCheckFailure !== null &&
+    typeof s.previousCheckFailure !== "string"
+  ) {
+    return false;
+  }
 
   // Validate each hash history entry shape
   for (const entry of s.findingsHashHistory) {
@@ -58,6 +67,7 @@ export function createInitialState(): ReviewState {
     findingsHashHistory: [],
     status: "initialized",
     stopReason: null,
+    previousCheckFailure: null,
   };
 }
 
@@ -117,7 +127,14 @@ export function deserializeState(commentBody: string): ReviewState | null {
     if (!validateState(parsed)) {
       return null;
     }
-    return parsed as ReviewState;
+    // Normalize fields added after the initial release so consumers
+    // can rely on them being present (null when absent in old state comments).
+    const normalized: ReviewState = {
+      ...(parsed as ReviewState),
+      previousCheckFailure:
+        (parsed as { previousCheckFailure?: string | null }).previousCheckFailure ?? null,
+    };
+    return normalized;
   } catch {
     return null;
   }

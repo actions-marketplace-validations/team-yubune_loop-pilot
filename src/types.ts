@@ -33,6 +33,13 @@ export interface ReviewState {
   findingsHashHistory: FindingsHashEntry[];
   status: ReviewStatus;
   stopReason: StopReason | null;
+  /**
+   * Tail of the previous iteration's CHECK_COMMAND failure output.
+   * Used as additional context for the next claude-code-action repair
+   * prompt. Null when the previous iteration did not run CHECK_COMMAND
+   * or succeeded.
+   */
+  previousCheckFailure: string | null;
 }
 
 export interface FindingsHashEntry {

@@ -249,5 +249,39 @@ describe("createInitialState", () => {
     expect(state.findingsHashHistory).toEqual([]);
     expect(state.status).toBe("initialized");
     expect(state.stopReason).toBeNull();
+    expect(state.previousCheckFailure).toBeNull();
+  });
+});
+
+describe("deserializeState (forward compatibility)", () => {
+  it("normalizes a state comment that predates the previousCheckFailure field", () => {
+    // Hand-crafted body shaped like a pre-extension state comment to verify
+    // existing PRs still deserialize cleanly after the field is added.
+    const legacyBody = [
+      "Auto-review state is stored in this comment.",
+      "",
+      "<!-- auto-review-state",
+      JSON.stringify(
+        {
+          iterationCount: 1,
+          lastProcessedReviewId: 42,
+          lastClaudeCommitSha: "abc",
+          lastCodexRequestCommentId: 7,
+          lastCodexReviewReceivedAt: "2026-01-01T00:00:00Z",
+          lastFindingsHash: "hash1",
+          findingsHashHistory: [],
+          status: "waiting_codex",
+          stopReason: null,
+        },
+        null,
+        2,
+      ),
+      "-->",
+    ].join("\n");
+
+    const restored = deserializeState(legacyBody);
+    expect(restored).not.toBeNull();
+    expect(restored!.previousCheckFailure).toBeNull();
+    expect(restored!.status).toBe("waiting_codex");
   });
 });
