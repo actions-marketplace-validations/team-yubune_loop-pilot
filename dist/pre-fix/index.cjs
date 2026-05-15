@@ -10838,7 +10838,7 @@ var require_mock_interceptor = __commonJS({
 var require_mock_client = __commonJS({
   "node_modules/undici/lib/mock/mock-client.js"(exports2, module2) {
     "use strict";
-    var { promisify: promisify3 } = require("node:util");
+    var { promisify: promisify6 } = require("node:util");
     var Client = require_client();
     var { buildMockDispatch } = require_mock_utils();
     var {
@@ -10878,7 +10878,7 @@ var require_mock_client = __commonJS({
         return new MockInterceptor(opts, this[kDispatches]);
       }
       async [kClose]() {
-        await promisify3(this[kOriginalClose])();
+        await promisify6(this[kOriginalClose])();
         this[kConnected] = 0;
         this[kMockAgent][Symbols.kClients].delete(this[kOrigin]);
       }
@@ -10891,7 +10891,7 @@ var require_mock_client = __commonJS({
 var require_mock_pool = __commonJS({
   "node_modules/undici/lib/mock/mock-pool.js"(exports2, module2) {
     "use strict";
-    var { promisify: promisify3 } = require("node:util");
+    var { promisify: promisify6 } = require("node:util");
     var Pool = require_pool();
     var { buildMockDispatch } = require_mock_utils();
     var {
@@ -10931,7 +10931,7 @@ var require_mock_pool = __commonJS({
         return new MockInterceptor(opts, this[kDispatches]);
       }
       async [kClose]() {
-        await promisify3(this[kOriginalClose])();
+        await promisify6(this[kOriginalClose])();
         this[kConnected] = 0;
         this[kMockAgent][Symbols.kClients].delete(this[kOrigin]);
       }
@@ -18633,12 +18633,13 @@ var require_undici = __commonJS({
   }
 });
 
-// dist/main-init.js
-var main_init_exports = {};
-__export(main_init_exports, {
-  runInit: () => runInit
+// dist/main-pre-fix.js
+var main_pre_fix_exports = {};
+__export(main_pre_fix_exports, {
+  runPreFix: () => runPreFix
 });
-module.exports = __toCommonJS(main_init_exports);
+module.exports = __toCommonJS(main_pre_fix_exports);
+var import_node_child_process6 = require("node:child_process");
 
 // node_modules/@actions/core/lib/command.js
 var os = __toESM(require("os"), 1);
@@ -19139,6 +19140,13 @@ function info(message) {
 }
 
 // dist/config.js
+var DEFAULT_AUTO_REVIEW_LABEL = "auto-review-fix";
+function loadConfig() {
+  return {
+    ...loadBaseConfig(),
+    anthropicApiKey: requireInput("anthropic-api-key", "ANTHROPIC_API_KEY")
+  };
+}
 function loadInitConfig() {
   return {
     ...loadBaseConfig(),
@@ -19403,24 +19411,6 @@ async function readState(owner, name, pr, token) {
   }
   return { found: true, corrupted: false, state, commentId: parsed.id, commentUpdatedAt: parsed.updatedAt };
 }
-async function createStateComment(owner, name, pr, state, token) {
-  const body = serializeState(state);
-  const { stdout } = await execFileAsync("gh", [
-    "api",
-    "--method",
-    "POST",
-    `repos/${owner}/${name}/issues/${pr}/comments`,
-    "--field",
-    `body=${body}`,
-    "--jq",
-    ".id"
-  ], { env: buildGhEnv(token) });
-  const commentId = parseInt(stdout.trim(), 10);
-  if (isNaN(commentId)) {
-    throw new Error(`createStateComment: unexpected response from GitHub API: ${stdout.trim()}`);
-  }
-  return commentId;
-}
 async function updateStateComment(owner, name, commentId, state, token, options = {}) {
   const body = serializeState(state);
   const trimmedState = deserializeState(body);
@@ -19496,12 +19486,211 @@ function parseCommentSnapshot(stdout, context) {
   throw new Error(`${context}: unexpected response from GitHub API: ${stdout}`);
 }
 
-// dist/comment-poster.js
+// dist/review-collector.js
 var import_node_child_process2 = require("node:child_process");
 var import_node_util2 = require("node:util");
+
+// dist/severity-parser.js
+var CODEX_FOOTER_PATTERN = /\n?Useful\? React with 👍 \/ 👎\.\s*$/;
+var NO_FINDINGS_PATTERN = /\bno\s+(?:p0\s*\/\s*p1\s+)?findings?\b|\b0\s+findings?\b|\bno\s+issues?\b/i;
+var STAGE1_REGEX = /^\s*\[?(P[0-2])\]?\s*(.*)/;
+var STAGE2_REGEX = /^\s*(?:\*{2})?\[?(P[0-2])\]?(?:\*{2})?\s*(.*)/;
+var IMAGE_BADGE_REGEX = /!\[(P[0-2])\s+Badge\]\([^)]+\)(?:\s*<\/sub>)*\s*(.*)$/i;
+var FALLBACK_KEYWORD_REGEX = /\b(P0|P1)\b/;
+function parseSeverity(rawBody) {
+  const stripped = rawBody.replace(/^[\s\n]+/, "");
+  const doubleNewlineIndex = stripped.indexOf("\n\n");
+  const firstLine = doubleNewlineIndex === -1 ? stripped : stripped.slice(0, doubleNewlineIndex);
+  const rawBodyPart = doubleNewlineIndex === -1 ? "" : stripped.slice(doubleNewlineIndex + 2);
+  const body = rawBodyPart.replace(CODEX_FOOTER_PATTERN, "").trim();
+  const stage1Match = STAGE1_REGEX.exec(firstLine);
+  if (stage1Match) {
+    const severity = stage1Match[1];
+    const title = stage1Match[2].trim();
+    return { severity, title: cleanTitle(title), body };
+  }
+  const stage2Match = STAGE2_REGEX.exec(firstLine);
+  if (stage2Match) {
+    const severity = stage2Match[1];
+    const title = stage2Match[2].trim();
+    return { severity, title: cleanTitle(title), body };
+  }
+  const imageBadgeMatch = IMAGE_BADGE_REGEX.exec(firstLine);
+  if (imageBadgeMatch) {
+    const severity = imageBadgeMatch[1].toUpperCase();
+    const title = imageBadgeMatch[2].trim();
+    return { severity, title: cleanTitle(title), body };
+  }
+  if (NO_FINDINGS_PATTERN.test(firstLine)) {
+    return { severity: null, title: firstLine.trim(), body };
+  }
+  const fallbackMatch = FALLBACK_KEYWORD_REGEX.exec(stripped);
+  if (fallbackMatch) {
+    const severity = fallbackMatch[1];
+    return { severity, title: firstLine.trim(), body };
+  }
+  return { severity: null, title: firstLine.trim(), body };
+}
+function cleanTitle(title) {
+  return title.trim().replace(/^\*\*/, "").replace(/\*\*$/, "").replace(/^\*\*(.+)\*\*$/, "$1").replace(/^__(.+)__$/, "$1").trim();
+}
+
+// dist/review-collector.js
 var execFileAsync2 = (0, import_node_util2.promisify)(import_node_child_process2.execFile);
-async function postComment(owner, name, pr, body, token) {
+var MAX_BUFFER2 = 10 * 1024 * 1024;
+async function fetchReviewComments(repoOwner, repoName, prNumber, githubToken) {
   const { stdout } = await execFileAsync2("gh", [
+    "api",
+    `repos/${repoOwner}/${repoName}/pulls/${prNumber}/comments`,
+    "--paginate",
+    "--jq",
+    // @json ensures each result is a single-line JSON-encoded string,
+    // preventing multi-line jq pretty-printing from breaking split("\n") parsing
+    ".[] | {id: .id, user: {login: .user.login}, body: .body, path: .path, line: .line, createdAt: .created_at} | @json"
+  ], { env: buildGhEnv(githubToken), maxBuffer: MAX_BUFFER2 });
+  if (!stdout.trim())
+    return [];
+  return stdout.trim().split("\n").filter((line) => line.trim()).flatMap((line) => {
+    const parsed = parseReviewCommentRecord(line);
+    if (!parsed) {
+      warning(`[review-collector] Skipping unparseable comment line: ${line.slice(0, 120)}`);
+      return [];
+    }
+    return [parsed];
+  });
+}
+function parseReviewCommentRecord(line) {
+  function isRecord(value) {
+    if (typeof value !== "object" || value === null)
+      return false;
+    const record = value;
+    const user = record.user;
+    return typeof record.id === "number" && typeof user === "object" && user !== null && typeof user.login === "string" && typeof record.body === "string" && typeof record.path === "string" && (typeof record.line === "number" || record.line === null) && typeof record.createdAt === "string";
+  }
+  try {
+    const parsed = JSON.parse(line);
+    if (isRecord(parsed)) {
+      return parsed;
+    }
+    if (typeof parsed === "string") {
+      const nested = JSON.parse(parsed);
+      if (isRecord(nested)) {
+        return nested;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+function filterAndParseComments(comments, botLogin, lastReceivedAt) {
+  return comments.filter((comment) => comment.user.login === botLogin).filter((comment) => lastReceivedAt === null || comment.createdAt > lastReceivedAt).flatMap((comment) => {
+    const parsed = parseSeverity(comment.body);
+    if (parsed.severity !== "P0" && parsed.severity !== "P1" && parsed.severity !== "P2") {
+      return [];
+    }
+    const finding = {
+      severity: parsed.severity,
+      path: comment.path,
+      line: comment.line ?? 0,
+      title: parsed.title,
+      body: parsed.body
+    };
+    return [finding];
+  });
+}
+function shouldStabilizeReviewComments(comments, botLogin, lastReceivedAt, triggerSummaryBody) {
+  return countRelevantBotComments(comments, botLogin, lastReceivedAt) === 0 && summaryMayContainFindings(triggerSummaryBody);
+}
+async function stabilizeReviewComments(initialComments, options) {
+  const stablePolls = Math.max(1, options.stablePolls);
+  const intervalMs = Math.max(1, options.intervalMs);
+  const maxWaitMs = Math.max(intervalMs * stablePolls, options.maxWaitMs);
+  if (!shouldStabilizeReviewComments(initialComments, options.botLogin, options.lastReceivedAt, options.triggerSummaryBody)) {
+    return initialComments;
+  }
+  let latestComments = initialComments;
+  let lastCount = countRelevantBotComments(latestComments, options.botLogin, options.lastReceivedAt);
+  let stableCount = 0;
+  let waitedMs = 0;
+  options.log?.(`[review-collector] No Codex inline comments yet; waiting for count to stabilize (${stablePolls} polls).`);
+  while (stableCount < stablePolls && waitedMs < maxWaitMs) {
+    await options.sleep(intervalMs);
+    waitedMs += intervalMs;
+    const nextComments = await options.fetchComments();
+    const nextCount = countRelevantBotComments(nextComments, options.botLogin, options.lastReceivedAt);
+    if (nextCount === lastCount) {
+      stableCount += 1;
+    } else {
+      options.log?.(`[review-collector] Codex inline comment count changed ${lastCount} -> ${nextCount}; resetting stabilization count.`);
+      stableCount = 0;
+      lastCount = nextCount;
+    }
+    latestComments = nextComments;
+  }
+  options.log?.(`[review-collector] Stabilization finished after ${waitedMs}ms with ${lastCount} Codex inline comment(s).`);
+  return latestComments;
+}
+function countRelevantBotComments(comments, botLogin, lastReceivedAt) {
+  return comments.filter((comment) => comment.user.login === botLogin && (lastReceivedAt === null || comment.createdAt > lastReceivedAt)).length;
+}
+function summaryMayContainFindings(body) {
+  const normalized = body.toLowerCase();
+  const noFindingsPatterns = [
+    /\bno\s+p0\s*\/\s*p1(?:\s*\/\s*p2)?\s+findings?\b/i,
+    /\bno\s+findings?\b/i,
+    /\b0\s+findings?\b/i,
+    /\bno\s+issues?\b/i,
+    /指摘なし/,
+    /問題なし/
+  ];
+  if (noFindingsPatterns.some((pattern) => pattern.test(body))) {
+    return false;
+  }
+  return /\bp0\b/i.test(body) || /\bp1\b/i.test(body) || /\bp2\b/i.test(body) || /\bfindings?\b/.test(normalized) || /\bissues?\b/.test(normalized) || /指摘|問題|検出/.test(body);
+}
+
+// dist/findings-hash.js
+var import_node_crypto = require("node:crypto");
+function computeFindingsHash(findings) {
+  const normalized = findings.map(normalizeFinding);
+  const uniqueSorted = [...new Set(normalized)].sort();
+  return stableHash(JSON.stringify(uniqueSorted));
+}
+function normalizeFinding(finding) {
+  const bodyHash = stableHash(finding.body);
+  return JSON.stringify([finding.severity, finding.path, bodyHash]);
+}
+function stableHash(input2) {
+  return (0, import_node_crypto.createHash)("sha256").update(input2).digest("hex").slice(0, 16);
+}
+
+// dist/loop-detector.js
+function isLoop(currentFindings, findingsHashHistory) {
+  const currentHash = computeFindingsHash(currentFindings);
+  return findingsHashHistory.some((entry) => entry.hash === currentHash);
+}
+
+// dist/comment-poster.js
+var import_node_child_process3 = require("node:child_process");
+var import_node_util3 = require("node:util");
+var execFileAsync3 = (0, import_node_util3.promisify)(import_node_child_process3.execFile);
+var STOP_REASON_LABELS = {
+  no_findings: "no P0/P1/P2 findings",
+  max_iterations: "reached max iterations (MAX_REVIEW_ITERATIONS)",
+  loop_detected: "same findings detected in loop",
+  claude_api_error: "Claude API error",
+  test_failure: "CHECK_COMMAND failed after fix",
+  manual_stop: "manual stop requested",
+  state_corrupted: "hidden comment state corrupted",
+  state_conflict: "hidden comment state changed concurrently",
+  action_timeout: "Claude Code Action workflow timeout",
+  action_failure: "Claude Code Action exited with a non-zero status",
+  scope_violation: "repair touched paths or exceeded the size budget allowed for auto-fix",
+  max_turns_exceeded: "Claude Code Action exhausted the configured --max-turns budget"
+};
+async function postComment(owner, name, pr, body, token) {
+  const { stdout } = await execFileAsync3("gh", [
     "api",
     `repos/${owner}/${name}/issues/${pr}/comments`,
     "-X",
@@ -19517,62 +19706,662 @@ async function postComment(owner, name, pr, body, token) {
   }
   return commentId;
 }
+async function postCompletionComment(owner, name, pr, iterations, token) {
+  const body = `Auto-review completed.
+
+Iterations: ${iterations}
+All P0/P1/P2 findings have been resolved.`;
+  return postComment(owner, name, pr, body, token);
+}
+async function postStopComment(owner, name, pr, stopReason, reviewId, remainingFindings, detail, token) {
+  const formattedReason = STOP_REASON_LABELS[stopReason];
+  const body = [
+    "Automation stopped.",
+    "",
+    `Reason: ${formattedReason}`,
+    `Last processed Codex review: #${reviewId}`,
+    `Open P0/P1/P2 findings remaining: ${remainingFindings}`,
+    `Detail: ${detail}`,
+    "Recommendation: manual intervention required."
+  ].join("\n");
+  return postComment(owner, name, pr, body, token);
+}
+async function postInitIncompleteComment(owner, name, pr, token) {
+  const body = "Auto-review initialization incomplete. Workflow A may have failed before posting the initial review request. Please re-run Workflow A or manually post '@codex review'.";
+  return postComment(owner, name, pr, body, token);
+}
 async function postCodexReviewRequest(owner, name, pr, token) {
   return postComment(owner, name, pr, "@codex review", token);
 }
 
-// dist/main-init.js
+// dist/pr-labels.js
+var import_node_child_process4 = require("node:child_process");
+var import_node_util4 = require("node:util");
+var execFileAsync4 = (0, import_node_util4.promisify)(import_node_child_process4.execFile);
+var fetchPrLabels = async (owner, name, pr, token) => {
+  const { stdout } = await execFileAsync4("gh", [
+    "api",
+    `repos/${owner}/${name}/issues/${pr}/labels`,
+    "--paginate",
+    "--jq",
+    ".[].name"
+  ], { env: buildGhEnv(token) });
+  return stdout.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+};
+function isAutoReviewAllowed(requiredLabel, currentLabels) {
+  if (requiredLabel === "")
+    return false;
+  const normalized = requiredLabel.toLowerCase();
+  return currentLabels.some((label) => label.toLowerCase() === normalized);
+}
+
+// dist/restart-command.js
+var import_node_child_process5 = require("node:child_process");
+var import_node_util5 = require("node:util");
+var execFileAsync5 = (0, import_node_util5.promisify)(import_node_child_process5.execFile);
+function normalizeBody(body) {
+  return body.replace(/[\r\n]+$/, "");
+}
+function isRestartCommandLike(body) {
+  const normalized = normalizeBody(body).toLowerCase();
+  return normalized === "/restart-review" || normalized.startsWith("/restart-review ");
+}
+function parseRestartCommand(body) {
+  const normalized = normalizeBody(body);
+  const lower = normalized.toLowerCase();
+  if (lower === "/restart-review") {
+    return { isRestart: true, mode: "soft" };
+  }
+  if (!lower.startsWith("/restart-review ")) {
+    return { isRestart: false };
+  }
+  const tail = normalized.slice("/restart-review ".length).trim();
+  if (tail === "") {
+    return { isRestart: true, mode: "soft" };
+  }
+  if (tail.toLowerCase() === "--hard") {
+    return { isRestart: true, mode: "hard" };
+  }
+  return { isRestart: true, invalidReason: "unsupported_option" };
+}
+function applyRestartToState(state, mode, reviewRequestCommentId) {
+  if (state.status === "initialized" || state.status === "fixing" && mode !== "hard") {
+    return { ok: false, reason: "unsupported_status" };
+  }
+  if (state.status === "stopped" && state.stopReason === "state_corrupted") {
+    return { ok: false, reason: "state_corrupted" };
+  }
+  if (state.status !== "done" && state.status !== "stopped" && state.status !== "waiting_codex" && state.status !== "fixing") {
+    return { ok: false, reason: "unsupported_status" };
+  }
+  const nextState = {
+    ...state,
+    status: "waiting_codex",
+    stopReason: null,
+    lastProcessedReviewId: null,
+    lastCodexRequestCommentId: reviewRequestCommentId
+  };
+  if (mode === "hard") {
+    nextState.iterationCount = 0;
+    nextState.findingsHashHistory = [];
+    nextState.lastFindingsHash = null;
+  }
+  return { ok: true, nextState, previousStopReason: state.stopReason };
+}
+async function handleRestartCommand(context, deps = defaultRestartCommandDeps) {
+  const command = parseRestartCommand(context.triggerCommentBody);
+  if (!command.isRestart) {
+    return { handled: false };
+  }
+  if (command.invalidReason) {
+    await deps.postComment(context.owner, context.repo, context.prNumber, "\u274C Restart rejected: unsupported option. Use `/restart-review` or `/restart-review --hard`.", context.githubToken);
+    return { handled: true };
+  }
+  if (!context.stateResult.found && context.stateResult.corrupted) {
+    await deps.postComment(context.owner, context.repo, context.prNumber, "\u274C Restart cannot apply: state is corrupted. See docs/operations/stop-and-recovery.md.", context.githubToken);
+    return { handled: true };
+  }
+  if (!context.stateResult.found) {
+    await deps.postComment(context.owner, context.repo, context.prNumber, "\u274C Restart cannot apply: auto-review state was not found.", context.githubToken);
+    return { handled: true };
+  }
+  const hasPermission = await canRestart(context, deps);
+  if (!hasPermission) {
+    await deps.postComment(context.owner, context.repo, context.prNumber, `\u274C Restart rejected: insufficient permission. @${context.triggerUserLogin} is not allowed to restart auto-review.`, context.githubToken);
+    return { handled: true };
+  }
+  const preflight = applyRestartToState(context.stateResult.state, command.mode, null);
+  if (!preflight.ok) {
+    await deps.postComment(context.owner, context.repo, context.prNumber, restartRejectionMessage(preflight.reason), context.githubToken);
+    return { handled: true };
+  }
+  await deps.updateStateComment(context.owner, context.repo, context.stateResult.commentId, preflight.nextState, context.githubToken);
+  const reviewRequestCommentId = await deps.postCodexReviewRequest(context.owner, context.repo, context.prNumber, context.codexReviewRequestToken);
+  const restartResult = applyRestartToState(context.stateResult.state, command.mode, reviewRequestCommentId);
+  if (!restartResult.ok) {
+    await deps.postComment(context.owner, context.repo, context.prNumber, restartRejectionMessage(restartResult.reason), context.githubToken);
+    return { handled: true };
+  }
+  await deps.updateStateComment(context.owner, context.repo, context.stateResult.commentId, restartResult.nextState, context.githubToken);
+  await deps.postComment(context.owner, context.repo, context.prNumber, [
+    `\u{1F7E2} Auto-review restarted by @${context.triggerUserLogin}.`,
+    "",
+    `mode: ${command.mode}`,
+    `from: ${restartResult.previousStopReason ?? "none"}`,
+    `reviewRequestCommentId: ${reviewRequestCommentId}`
+  ].join("\n"), context.githubToken);
+  if (context.triggerCommentId !== 0) {
+    try {
+      await deps.addEyesReaction(context.owner, context.repo, context.triggerCommentId, context.githubToken);
+    } catch {
+    }
+  }
+  return { handled: true };
+}
+async function canRestart(context, deps) {
+  if (!context.triggerUserLogin) {
+    return false;
+  }
+  const roles = parseRoles(context.restartRoles);
+  if (roles.has("author")) {
+    const author = await deps.getPrAuthor(context.owner, context.repo, context.prNumber, context.githubToken);
+    if (author === context.triggerUserLogin) {
+      return true;
+    }
+  }
+  const permission = await deps.getCollaboratorPermission(context.owner, context.repo, context.triggerUserLogin, context.githubToken);
+  return roles.has(permission);
+}
+function parseRoles(raw) {
+  return new Set(raw.split(",").map((role) => role.trim().toLowerCase()).filter(Boolean));
+}
+function restartRejectionMessage(reason) {
+  switch (reason) {
+    case "state_corrupted":
+      return "\u274C Restart cannot apply: state is corrupted. See docs/operations/stop-and-recovery.md.";
+    case "unsupported_status":
+      return "\u274C Restart cannot apply: current review status is not restartable.";
+  }
+}
+async function getPrAuthor(owner, repo, prNumber, token) {
+  const { stdout } = await execFileAsync5("gh", ["api", `repos/${owner}/${repo}/pulls/${prNumber}`, "--jq", ".user.login"], { env: buildGhEnv(token) });
+  return stdout.trim();
+}
+var BUILTIN_PERMISSIONS = /* @__PURE__ */ new Set([
+  "admin",
+  "maintain",
+  "write",
+  "triage",
+  "read"
+]);
+function isBuiltinPermission(value) {
+  return typeof value === "string" && BUILTIN_PERMISSIONS.has(value);
+}
+function pickPermission(roleName, permission) {
+  if (isBuiltinPermission(roleName)) {
+    return roleName;
+  }
+  if (isBuiltinPermission(permission)) {
+    return permission;
+  }
+  return "none";
+}
+async function getCollaboratorPermission(owner, repo, user, token) {
+  try {
+    const { stdout } = await execFileAsync5("gh", [
+      "api",
+      `repos/${owner}/${repo}/collaborators/${user}/permission`,
+      "--jq",
+      // Emit both fields as a JSON array so we can disambiguate custom
+      // role_name (e.g., "Reviewer") from built-in tiers in TS.
+      "[.role_name, .permission] | @json"
+    ], { env: buildGhEnv(token) });
+    const parsed = JSON.parse(stdout.trim());
+    const roleName = typeof parsed[0] === "string" ? parsed[0] : null;
+    const permission = typeof parsed[1] === "string" ? parsed[1] : null;
+    return pickPermission(roleName, permission);
+  } catch {
+    return "none";
+  }
+}
+async function postComment2(owner, repo, prNumber, body, token) {
+  const { stdout } = await execFileAsync5("gh", [
+    "api",
+    `repos/${owner}/${repo}/issues/${prNumber}/comments`,
+    "-X",
+    "POST",
+    "-f",
+    `body=${body}`,
+    "--jq",
+    ".id"
+  ], { env: buildGhEnv(token) });
+  return Number.parseInt(stdout.trim(), 10);
+}
+async function addEyesReaction(owner, repo, commentId, token) {
+  await execFileAsync5("gh", [
+    "api",
+    `repos/${owner}/${repo}/issues/comments/${commentId}/reactions`,
+    "-X",
+    "POST",
+    "-H",
+    "Accept: application/vnd.github+json",
+    "-f",
+    "content=eyes"
+  ], { env: buildGhEnv(token) });
+}
+var defaultRestartCommandDeps = {
+  getPrAuthor,
+  getCollaboratorPermission,
+  updateStateComment,
+  postComment: postComment2,
+  addEyesReaction,
+  postCodexReviewRequest
+};
+
+// dist/claude-code-repair-request.js
+var PREVIOUS_CHECK_FAILURE_MAX_CHARS = 2e4;
+var SEVERITY_RANK = {
+  P0: 0,
+  P1: 1,
+  P2: 2
+};
+function truncatePreviousCheckFailure(output, maxChars = PREVIOUS_CHECK_FAILURE_MAX_CHARS) {
+  if (output.length <= maxChars)
+    return output;
+  const buildHeader = (omitted2) => `[... truncated ${omitted2} leading characters of CHECK_COMMAND output; showing tail ...]
+`;
+  const headerBudget = buildHeader(output.length).length;
+  if (headerBudget >= maxChars) {
+    return output.slice(output.length - maxChars);
+  }
+  const tailRoom = maxChars - headerBudget;
+  const tail = output.slice(output.length - tailRoom);
+  const omitted = output.length - tail.length;
+  return buildHeader(omitted) + tail;
+}
+function toRepairFinding(finding) {
+  return {
+    severity: finding.severity,
+    path: finding.path,
+    line: finding.line,
+    title: finding.title,
+    body: finding.body,
+    entryPointOnly: true
+  };
+}
+function compareFindings(a, b) {
+  const sev = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
+  if (sev !== 0)
+    return sev;
+  if (a.path !== b.path)
+    return a.path < b.path ? -1 : 1;
+  if (a.line !== b.line)
+    return a.line - b.line;
+  if (a.title !== b.title)
+    return a.title < b.title ? -1 : 1;
+  return a.body < b.body ? -1 : a.body > b.body ? 1 : 0;
+}
+var INSTRUCTION_LINES = [
+  "1. Each Codex finding's `path` and `line` mark an investigation entry point, NOT the bounded scope of the fix. Explore related files, callers, type definitions, existing tests, and configuration as needed to produce a consistent repair.",
+  "2. Treat existing tests as the specification. If a test captures the intended behavior, do not weaken or rewrite it to make a faulty fix pass; fix the production code instead.",
+  "3. If your edits surface type errors, test failures, or caller mismatches elsewhere in the repository, investigate those related sites and repair them so the codebase remains consistent.",
+  "4. Make the minimal change required to address each finding. Do not perform unrelated refactors, formatting sweeps, dependency upgrades, or style changes.",
+  "5. Do not read or output secrets such as API keys, tokens, credentials, or the contents of environment variables that may carry secrets.",
+  "6. Do not assume network access. Do not add new external dependencies and do not call out to external services as part of the repair.",
+  "7. Do not execute arbitrary shell commands. Only the configured CHECK_COMMAND is expected to run as part of verification.",
+  "8. After your edits, the repository must be in a state where the configured CHECK_COMMAND succeeds. The workflow will run the final CHECK_COMMAND verification regardless of your own checks, so leave the tree in a verifiable state."
+];
+function buildClaudeCodeRepairRequest(input2) {
+  const findings = input2.findings.map(toRepairFinding).sort(compareFindings);
+  const previousCheckFailure = input2.previousCheckFailure == null ? null : truncatePreviousCheckFailure(input2.previousCheckFailure);
+  return {
+    version: 1,
+    pr: {
+      number: input2.prContext.number,
+      title: input2.prContext.title,
+      branch: input2.prContext.branch,
+      headSha: input2.headSha ?? null
+    },
+    execution: {
+      iteration: input2.iteration,
+      maxIterations: input2.maxIterations,
+      checkCommand: input2.checkCommand,
+      previousCheckFailure
+    },
+    findings,
+    instructions: INSTRUCTION_LINES.join("\n")
+  };
+}
+function formatFindingBlock(finding, index) {
+  return [
+    `### Finding ${index + 1} \u2014 ${finding.severity}`,
+    `- Entry point: ${finding.path}:${finding.line} (investigation start, not fix scope)`,
+    `- Title: ${finding.title}`,
+    "",
+    finding.body.trim()
+  ].join("\n");
+}
+function buildClaudeCodeRepairPrompt(request) {
+  const { pr, execution, findings } = request;
+  const headSha = pr.headSha ?? "(not provided)";
+  const sections = [];
+  sections.push("You are Claude Code performing repo-level repair on a pull request.");
+  sections.push([
+    "## PR Context",
+    `- PR #${pr.number}: ${pr.title}`,
+    `- Branch: ${pr.branch}`,
+    `- Head SHA: ${headSha}`,
+    `- Iteration: ${execution.iteration} / ${execution.maxIterations}`,
+    `- CHECK_COMMAND: \`${execution.checkCommand}\``
+  ].join("\n"));
+  const findingsHeader = `## Codex Findings (${findings.length})`;
+  if (findings.length === 0) {
+    sections.push(`${findingsHeader}
+
+(no findings supplied)`);
+  } else {
+    const blocks = findings.map((f, i) => formatFindingBlock(f, i)).join("\n\n");
+    sections.push(`${findingsHeader}
+
+${blocks}`);
+  }
+  sections.push(`## Instructions
+${INSTRUCTION_LINES.join("\n")}`);
+  if (execution.previousCheckFailure != null) {
+    const longestRun = Math.max(2, ...Array.from(execution.previousCheckFailure.matchAll(/`+/g), (m) => m[0].length));
+    const fence = "`".repeat(longestRun + 1);
+    sections.push([
+      "## Previous CHECK_COMMAND Failure",
+      "The previous CHECK_COMMAND run failed with the output below. Use it as additional context for what to fix.",
+      "",
+      fence,
+      execution.previousCheckFailure,
+      fence
+    ].join("\n"));
+  }
+  return sections.join("\n\n") + "\n";
+}
+
+// dist/main-pre-fix.js
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 var defaultDeps = {
   readState,
-  createStateComment,
   updateStateComment,
-  postCodexReviewRequest,
-  setSecret,
-  info,
-  warning,
-  setOutput
+  fetchReviewComments,
+  stabilizeReviewComments,
+  postCompletionComment,
+  postStopComment,
+  postInitIncompleteComment,
+  fetchPrLabels,
+  handleRestartCommand,
+  setSecret: (secret) => setSecret(secret),
+  setOutput: (name, value) => setOutput(name, value),
+  info: (message) => info(message),
+  warning: (message) => warning(message),
+  error: (message) => error(message),
+  sleep,
+  now: () => /* @__PURE__ */ new Date(),
+  readHeadSha: () => {
+    try {
+      return (0, import_node_child_process6.execFileSync)("git", ["rev-parse", "HEAD"], { encoding: "utf-8" }).trim();
+    } catch (error2) {
+      warning(`[pre-fix] Could not read HEAD sha: ${error2 instanceof Error ? error2.message : String(error2)}`);
+      return "";
+    }
+  },
+  checkoutBranch: (ref) => {
+    (0, import_node_child_process6.execFileSync)("git", ["checkout", ref], { stdio: "inherit" });
+  }
 };
-async function runInit(config, deps = defaultDeps) {
+async function runPreFix(config, deps = defaultDeps) {
+  deps.setSecret(config.anthropicApiKey);
   deps.setSecret(config.githubToken);
   deps.setSecret(config.codexReviewRequestToken);
-  deps.info(`Initializing auto-review for PR #${config.prNumber}`);
-  const existing = await deps.readState(config.repoOwner, config.repoName, config.prNumber, config.githubToken);
-  let commentId;
-  let state = createInitialState();
-  if (existing.found) {
-    commentId = existing.commentId;
-    if (existing.state.status !== "initialized") {
-      deps.info(`Auto-review state is already ${existing.state.status}. Skipping init.`);
-      deps.setOutput("comment-id", String(commentId));
+  deps.setOutput("should_run", "false");
+  const triggerCommentId = config.triggerCommentId;
+  const prHeadRef = config.prHeadRef;
+  if (!prHeadRef) {
+    throw new Error("[pre-fix] pr-head-ref is required but not set. Cannot determine target branch.");
+  }
+  deps.info(`[pre-fix] Starting Workflow B for PR #${config.prNumber}, trigger comment: ${triggerCommentId}`);
+  const isCommandTrigger = isRestartCommandLike(config.triggerCommentBody);
+  if (!config.autoReviewFullAuto && !isCommandTrigger) {
+    const effectiveLabel = config.autoReviewLabel || DEFAULT_AUTO_REVIEW_LABEL;
+    const labels = await deps.fetchPrLabels(config.repoOwner, config.repoName, config.prNumber, config.githubToken);
+    if (!isAutoReviewAllowed(effectiveLabel, labels)) {
+      deps.info(`[pre-fix] Required label '${effectiveLabel}' is not present on PR #${config.prNumber}. Skipping.`);
       return;
     }
-    deps.info("Found incomplete initialized state comment, continuing init");
-  } else if (existing.corrupted && existing.commentId !== null) {
-    deps.warning("Found corrupted state comment, overwriting with fresh state");
-    commentId = existing.commentId;
-    await deps.updateStateComment(config.repoOwner, config.repoName, commentId, state, config.githubToken);
-  } else {
-    commentId = await deps.createStateComment(config.repoOwner, config.repoName, config.prNumber, state, config.githubToken);
-    deps.info(`Created state comment: ${commentId}`);
   }
-  const reviewRequestId = await deps.postCodexReviewRequest(config.repoOwner, config.repoName, config.prNumber, config.codexReviewRequestToken);
-  deps.info(`Posted @codex review: comment ${reviewRequestId}`);
-  state = { ...state, status: "waiting_codex", lastCodexRequestCommentId: reviewRequestId };
-  await deps.updateStateComment(config.repoOwner, config.repoName, commentId, state, config.githubToken);
-  deps.info("Workflow A completed: status = waiting_codex");
-  deps.setOutput("comment-id", String(commentId));
+  const stateResult = await deps.readState(config.repoOwner, config.repoName, config.prNumber, config.githubToken);
+  let stateCommentUpdatedAt = stateResult.found || stateResult.corrupted ? stateResult.commentUpdatedAt : void 0;
+  async function updateStateCommentLocked(targetCommentId, nextState, detail) {
+    try {
+      const result = await deps.updateStateComment(config.repoOwner, config.repoName, targetCommentId, nextState, config.githubToken, stateCommentUpdatedAt ? { expectedUpdatedAt: stateCommentUpdatedAt } : void 0);
+      stateCommentUpdatedAt = result.updatedAt;
+      return true;
+    } catch (error2) {
+      if (!(error2 instanceof StateUpdateConflictError)) {
+        throw error2;
+      }
+      const message = error2 instanceof Error ? error2.message : String(error2);
+      deps.warning(`[pre-fix] Hidden comment state conflict. ${message}`);
+      await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, "state_conflict", triggerCommentId, 0, `${detail} Hidden comment was updated by another workflow run before this run could safely persist its state. Re-run after the active workflow finishes if needed.`, config.githubToken);
+      return false;
+    }
+  }
+  if (isCommandTrigger) {
+    const restartResult = await deps.handleRestartCommand({
+      owner: config.repoOwner,
+      repo: config.repoName,
+      prNumber: config.prNumber,
+      triggerCommentId,
+      triggerCommentBody: config.triggerCommentBody,
+      triggerUserLogin: config.triggerUserLogin,
+      restartRoles: config.autoReviewRestartRoles,
+      githubToken: config.githubToken,
+      codexReviewRequestToken: config.codexReviewRequestToken,
+      stateResult
+    });
+    if (restartResult.handled) {
+      return;
+    }
+  }
+  if (!stateResult.found && !stateResult.corrupted) {
+    deps.info("[pre-fix] No state found. Workflow A has not run. Skipping.");
+    return;
+  }
+  if (!stateResult.found && stateResult.corrupted) {
+    deps.error("[pre-fix] Hidden comment found but state JSON is corrupted.");
+    if (stateResult.commentId !== null) {
+      const corruptedState = {
+        ...createInitialState(),
+        status: "stopped",
+        stopReason: "state_corrupted"
+      };
+      if (!await updateStateCommentLocked(stateResult.commentId, corruptedState, "Could not mark corrupted hidden state as stopped."))
+        return;
+    }
+    await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, "state_corrupted", triggerCommentId, 0, "Hidden comment state JSON is corrupted. Manual re-initialization required.", config.githubToken);
+    return;
+  }
+  if (!stateResult.found) {
+    return;
+  }
+  const { state } = stateResult;
+  const { commentId } = stateResult;
+  if (state.status === "initialized") {
+    deps.info("[pre-fix] State is 'initialized' \u2014 Workflow A incomplete.");
+    await deps.postInitIncompleteComment(config.repoOwner, config.repoName, config.prNumber, config.githubToken);
+    return;
+  }
+  if (state.status === "stopped" || state.status === "done") {
+    deps.info(`[pre-fix] Status is '${state.status}'. Skipping.`);
+    return;
+  }
+  if (state.status === "fixing") {
+    const STALE_THRESHOLD_MS = 30 * 60 * 1e3;
+    const fixingStartedAt = state.lastCodexReviewReceivedAt;
+    if (fixingStartedAt === null) {
+      deps.warning("[pre-fix] Status is 'fixing' with null timestamp. Treating as stale.");
+    }
+    const elapsed = deps.now().getTime() - new Date(fixingStartedAt ?? 0).getTime();
+    if (fixingStartedAt !== null && elapsed < STALE_THRESHOLD_MS) {
+      deps.info(`[pre-fix] Status is 'fixing' (started ${Math.round(elapsed / 1e3)}s ago). Skipping.`);
+      return;
+    }
+    deps.warning(`[pre-fix] Status stuck in 'fixing' for ${Math.round(elapsed / 6e4)}min. Recovering.`);
+    const recoveredState = {
+      ...state,
+      status: "stopped",
+      stopReason: "state_corrupted"
+    };
+    if (!await updateStateCommentLocked(commentId, recoveredState, "Could not recover stale fixing state."))
+      return;
+    await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, "state_corrupted", triggerCommentId, 0, "Previous fixing state timed out \u2014 recovered automatically", config.githubToken);
+    return;
+  }
+  if (state.status !== "waiting_codex") {
+    deps.warning(`[pre-fix] Unexpected status '${state.status}'. Only 'waiting_codex' is processable. Skipping.`);
+    return;
+  }
+  if (triggerCommentId !== 0 && state.lastProcessedReviewId === triggerCommentId) {
+    deps.info(`[pre-fix] Trigger comment ${triggerCommentId} already processed. Skipping.`);
+    return;
+  }
+  deps.info(`[pre-fix] Debouncing ${config.debounceSeconds}s...`);
+  await deps.sleep(config.debounceSeconds * 1e3);
+  deps.info("[pre-fix] Fetching review comments...");
+  const fetchedComments = await deps.fetchReviewComments(config.repoOwner, config.repoName, config.prNumber, config.githubToken);
+  const rawComments = await deps.stabilizeReviewComments(fetchedComments, {
+    botLogin: config.codexBotLogin,
+    lastReceivedAt: state.lastCodexReviewReceivedAt,
+    triggerSummaryBody: config.triggerCommentBody,
+    intervalMs: config.stabilizeIntervalSeconds * 1e3,
+    stablePolls: config.stabilizeCount,
+    maxWaitMs: config.debounceSeconds * 1e3,
+    fetchComments: () => deps.fetchReviewComments(config.repoOwner, config.repoName, config.prNumber, config.githubToken),
+    sleep: deps.sleep,
+    log: (message) => deps.info(message)
+  });
+  const findings = filterAndParseComments(rawComments, config.codexBotLogin, state.lastCodexReviewReceivedAt);
+  deps.info(`[pre-fix] Found ${findings.length} P0/P1/P2 findings.`);
+  const latestCommentTime = rawComments.filter((c) => c.user.login === config.codexBotLogin).reduce((max, c) => c.createdAt > max ? c.createdAt : max, state.lastCodexReviewReceivedAt ?? "");
+  const updatedStateBase = {
+    ...state,
+    lastProcessedReviewId: triggerCommentId || state.lastProcessedReviewId,
+    lastCodexReviewReceivedAt: latestCommentTime || deps.now().toISOString()
+  };
+  if (findings.length === 0) {
+    deps.info("[pre-fix] No findings. Marking done.");
+    const doneState = {
+      ...updatedStateBase,
+      status: "done",
+      stopReason: "no_findings"
+    };
+    if (!await updateStateCommentLocked(commentId, doneState, "Could not mark auto-review as done."))
+      return;
+    await deps.postCompletionComment(config.repoOwner, config.repoName, config.prNumber, doneState.iterationCount, config.githubToken);
+    return;
+  }
+  if (state.iterationCount >= config.maxReviewIterations) {
+    deps.info(`[pre-fix] Iteration count ${state.iterationCount} >= max ${config.maxReviewIterations}. Stopping.`);
+    const stoppedState = {
+      ...updatedStateBase,
+      status: "stopped",
+      stopReason: "max_iterations"
+    };
+    if (!await updateStateCommentLocked(commentId, stoppedState, "Could not stop after reaching the max iteration limit."))
+      return;
+    await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, "max_iterations", triggerCommentId, findings.length, `Reached MAX_REVIEW_ITERATIONS (${config.maxReviewIterations})`, config.githubToken);
+    return;
+  }
+  if (isLoop(findings, state.findingsHashHistory)) {
+    deps.info("[pre-fix] Loop detected. Stopping.");
+    const stoppedState = {
+      ...updatedStateBase,
+      status: "stopped",
+      stopReason: "loop_detected"
+    };
+    if (!await updateStateCommentLocked(commentId, stoppedState, "Could not stop after detecting a findings loop."))
+      return;
+    await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, "loop_detected", triggerCommentId, findings.length, "Same findings hash detected in previous iteration", config.githubToken);
+    return;
+  }
+  const currentHash = computeFindingsHash(findings);
+  const newIteration = state.iterationCount + 1;
+  const updatedHashHistory = [
+    ...state.findingsHashHistory,
+    { iteration: newIteration, hash: currentHash }
+  ];
+  const fixingState = {
+    ...updatedStateBase,
+    iterationCount: newIteration,
+    status: "fixing",
+    lastFindingsHash: currentHash,
+    findingsHashHistory: updatedHashHistory
+  };
+  if (!await updateStateCommentLocked(commentId, fixingState, "Could not claim the hidden comment state for fixing."))
+    return;
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._\-/]*$/.test(prHeadRef) || prHeadRef.includes("..")) {
+    throw new Error(`[pre-fix] Invalid branch name: ${prHeadRef}`);
+  }
+  deps.checkoutBranch(prHeadRef);
+  const headSha = deps.readHeadSha();
+  const prContext = {
+    number: config.prNumber,
+    title: config.prTitle,
+    branch: prHeadRef
+  };
+  const repairRequest = buildClaudeCodeRepairRequest({
+    prContext,
+    headSha,
+    findings,
+    iteration: fixingState.iterationCount,
+    maxIterations: config.maxReviewIterations,
+    checkCommand: config.checkCommand,
+    previousCheckFailure: state.previousCheckFailure ?? null
+  });
+  const prompt = buildClaudeCodeRepairPrompt(repairRequest);
+  deps.setOutput("should_run", "true");
+  deps.setOutput("prompt", prompt);
+  deps.setOutput("iteration", String(fixingState.iterationCount));
+  deps.setOutput("check_command", config.checkCommand);
+  deps.setOutput("pr_head_ref", prHeadRef);
+  deps.setOutput("head_sha", headSha);
+  deps.setOutput("comment_id", String(commentId));
+  deps.setOutput("trigger_comment_id", String(triggerCommentId));
+  deps.setOutput("findings_count", String(findings.length));
+  deps.info(`[pre-fix] Phase 3 prep complete. iteration=${fixingState.iterationCount}, findings=${findings.length}.`);
 }
 async function run() {
-  await runInit(loadInitConfig());
+  await runPreFix(loadConfig());
 }
 if (process.env.VITEST !== "true") {
-  run().catch((error2) => {
+  run().catch(async (error2) => {
     setFailed(error2 instanceof Error ? error2.message : String(error2));
+    try {
+      const crashConfig = loadInitConfig();
+      const crashStateResult = await readState(crashConfig.repoOwner, crashConfig.repoName, crashConfig.prNumber, crashConfig.githubToken);
+      if (crashStateResult.found && crashStateResult.state.status === "fixing") {
+        warning("[pre-fix] Crash recovery: resetting fixing \u2192 stopped (state_corrupted)");
+        const recoveredState = {
+          ...crashStateResult.state,
+          status: "stopped",
+          stopReason: "state_corrupted"
+        };
+        await updateStateComment(crashConfig.repoOwner, crashConfig.repoName, crashStateResult.commentId, recoveredState, crashConfig.githubToken, { expectedUpdatedAt: crashStateResult.commentUpdatedAt });
+      }
+    } catch (recoveryError) {
+      error(`[pre-fix] Crash recovery failed: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`);
+    }
   });
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
-  runInit
+  runPreFix
 });
 /*! Bundled license information:
 

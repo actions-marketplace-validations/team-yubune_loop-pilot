@@ -9,12 +9,15 @@
 ### 実装必須
 
 - [x] Workflow A: PR 作成時に hidden comment 作成 + `@codex review` 投稿 → [Workflow A](../architecture/event-design.md#workflow-a-pr-作成時auto-review-inityml)
-- [x] Workflow B: Codex レビュー受信 + デバウンス待機 + Claude 修正 + 再レビュー依頼 → [Workflow B](../architecture/event-design.md#workflow-b-codex-レビュー受信--claude-修正auto-review-loopyml)
-- [x] Severity パーサー（P0/P1 抽出の正規表現） → [Severity の抽出ルール](../specs/severity-parser.md#severity-の抽出ルール)
+- [x] Workflow B: Codex レビュー受信 + デバウンス待機 + claude-code-action 修正 + 再レビュー依頼 → [Workflow B](../architecture/event-design.md#workflow-b-codex-レビュー受信--claude-修正auto-review-loopyml)
+- [x] Severity パーサー（P0/P1/P2 抽出の正規表現） → [Severity の抽出ルール](../specs/severity-parser.md#severity-の抽出ルール)
 - [x] `@codex review` 投稿専用の接続済みユーザー PAT（`CODEX_REVIEW_REQUEST_TOKEN`）を Workflow A/B で使用し、未設定時は `GITHUB_TOKEN` に fallback → [Codex review request token](../architecture/event-design.md#codex-review-request-token)
-- [x] Claude API 呼び出し（`edit_file` tool use） → [Claude 修正エンジン](../specs/claude-fix-engine.md)
-- [x] `edit_file` 適用ロジック（逆順適用・空白正規化・複数マッチ） → [edit 適用ロジック](../specs/claude-fix-engine.md#edit-適用ロジック)
+- [x] `anthropics/claude-code-action@v1` への repair request 構築（`buildClaudeCodeRepairRequest` / `buildClaudeCodeRepairPrompt`） → [Claude Code repair request](../specs/claude-code-repair-request.md)
+- [x] composite action `loop/action.yml` を pre-fix → claude-code-action → post-fix の3-step に分割 → [Workflow B Phase 3](../architecture/event-design.md#workflow-b-の処理フェーズ)
+- [x] post-fix の変更スコープ検査（`src/`, `tests/`, `docs/` のみ、`.github/` 等は hard block、20 files / 1000 lines 上限） → [Claude Code Action 実行制御](../operations/security.md#変更スコープ検査post-fix)
 - [x] `CHECK_COMMAND` 実行 + 失敗時ロールバック → [検証コマンドとロールバック](../operations/check-and-rollback.md)
+- [x] CHECK_COMMAND 失敗時の tail を `previousCheckFailure` に保存し、次 iteration の prompt にコンテキストとして渡す
+- [x] claude-code-action の `outcome=cancelled` を `action_timeout`、`outcome=failure` を `action_failure` / `max_turns_exceeded` に変換する post-fix 分岐
 - [x] hidden comment による状態管理 → [状態管理](../architecture/flow-and-state.md#状態管理)
 - [x] `MAX_REVIEW_ITERATIONS` による停止制御 → [停止条件](../operations/stop-and-recovery.md#停止条件)
 - [x] 同一指摘ループ検知 → [ループ検知](../specs/loop-detection.md)
@@ -37,11 +40,12 @@
 - `DEBOUNCE_SECONDS=0` への短縮可否は未検証。PR #7 ではデフォルト待機で安定動作を確認したのみ。
 - 互換用 `issue_comment` トリガーでは done 終了を確認済みだが、同トリガー経由で修正 commit/push まで進むケースは未検証。
 - `concurrency` の多重 review キュー挙動は実装方針を docs に記録済みだが、実 PR で競合を発生させた検証は未実施。
-- `edit_file` の空白正規化・複数マッチ・逆順適用はユニットテスト済み。実 PR #7 で踏んだ自動修正は単一 edit。
 - 同一指摘ループ検知はユニットテスト済み。実 PR #7 では no-edit 停止時の failed attempt 消費を修正し、最終的にはループ停止ではなく done 終了を確認した。
 - fork PR からの起動防止は workflow/action guard として実装済み。本リポジトリで外部 fork PR を作成しての E2E 検証は未実施。
-- large file は `MAX_INPUT_TOKENS_PER_FILE` の文字数ベース概算でスキップする実装。chunking は未実装で、本番移植前の検討事項。
 - stabilize safeguard は実装・ユニットテスト済み。PR #7 では inline comment が取得できたため、追加 polling が必要なケースは踏んでいない。
+- claude-code-action 経路（TY-237）の dogfood は本 PR をターゲットに `auto-review-fix` ラベルで検証する。
+- post-fix 変更スコープ検査は `tests/scope-checker.test.ts` で網羅済み。意図的なスコープ外修正を発生させた E2E は未実施（[Claude Code Action 実行制御](../operations/security.md#変更スコープ検査post-fix) 参照）。
+- `max_turns_exceeded` の検出は `actionExecutionFile` の文字列マッチに依存。execution file の正式スキーマが claude-code-action 側で公開されたら見直す。
 
 ---
 

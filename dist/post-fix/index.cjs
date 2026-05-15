@@ -4010,11 +4010,11 @@ var require_util2 = __commonJS({
     var { isUint8Array } = require("node:util/types");
     var { webidl } = require_webidl();
     var supportedHashes = [];
-    var crypto2;
+    var crypto;
     try {
-      crypto2 = require("node:crypto");
+      crypto = require("node:crypto");
       const possibleRelevantHashes = ["sha256", "sha384", "sha512"];
-      supportedHashes = crypto2.getHashes().filter((hash) => possibleRelevantHashes.includes(hash));
+      supportedHashes = crypto.getHashes().filter((hash) => possibleRelevantHashes.includes(hash));
     } catch {
     }
     function responseURL(response) {
@@ -4287,7 +4287,7 @@ var require_util2 = __commonJS({
       }
     }
     function bytesMatch(bytes, metadataList) {
-      if (crypto2 === void 0) {
+      if (crypto === void 0) {
         return true;
       }
       const parsedMetadata = parseMetadata(metadataList);
@@ -4302,7 +4302,7 @@ var require_util2 = __commonJS({
       for (const item of metadata) {
         const algorithm = item.algo;
         const expectedValue = item.hash;
-        let actualValue = crypto2.createHash(algorithm).update(bytes).digest("base64");
+        let actualValue = crypto.createHash(algorithm).update(bytes).digest("base64");
         if (actualValue[actualValue.length - 1] === "=") {
           if (actualValue[actualValue.length - 2] === "=") {
             actualValue = actualValue.slice(0, -2);
@@ -5366,8 +5366,8 @@ var require_body = __commonJS({
     var { multipartFormDataParser } = require_formdata_parser();
     var random;
     try {
-      const crypto2 = require("node:crypto");
-      random = (max) => crypto2.randomInt(0, max);
+      const crypto = require("node:crypto");
+      random = (max) => crypto.randomInt(0, max);
     } catch {
       random = (max) => Math.floor(Math.random(max));
     }
@@ -10838,7 +10838,7 @@ var require_mock_interceptor = __commonJS({
 var require_mock_client = __commonJS({
   "node_modules/undici/lib/mock/mock-client.js"(exports2, module2) {
     "use strict";
-    var { promisify: promisify3 } = require("node:util");
+    var { promisify: promisify4 } = require("node:util");
     var Client = require_client();
     var { buildMockDispatch } = require_mock_utils();
     var {
@@ -10878,7 +10878,7 @@ var require_mock_client = __commonJS({
         return new MockInterceptor(opts, this[kDispatches]);
       }
       async [kClose]() {
-        await promisify3(this[kOriginalClose])();
+        await promisify4(this[kOriginalClose])();
         this[kConnected] = 0;
         this[kMockAgent][Symbols.kClients].delete(this[kOrigin]);
       }
@@ -10891,7 +10891,7 @@ var require_mock_client = __commonJS({
 var require_mock_pool = __commonJS({
   "node_modules/undici/lib/mock/mock-pool.js"(exports2, module2) {
     "use strict";
-    var { promisify: promisify3 } = require("node:util");
+    var { promisify: promisify4 } = require("node:util");
     var Pool = require_pool();
     var { buildMockDispatch } = require_mock_utils();
     var {
@@ -10931,7 +10931,7 @@ var require_mock_pool = __commonJS({
         return new MockInterceptor(opts, this[kDispatches]);
       }
       async [kClose]() {
-        await promisify3(this[kOriginalClose])();
+        await promisify4(this[kOriginalClose])();
         this[kConnected] = 0;
         this[kMockAgent][Symbols.kClients].delete(this[kOrigin]);
       }
@@ -16776,13 +16776,13 @@ var require_frame = __commonJS({
     "use strict";
     var { maxUnsigned16Bit } = require_constants5();
     var BUFFER_SIZE = 16386;
-    var crypto2;
+    var crypto;
     var buffer = null;
     var bufIdx = BUFFER_SIZE;
     try {
-      crypto2 = require("node:crypto");
+      crypto = require("node:crypto");
     } catch {
-      crypto2 = {
+      crypto = {
         // not full compatibility, but minimum.
         randomFillSync: function randomFillSync(buffer2, _offset, _size) {
           for (let i = 0; i < buffer2.length; ++i) {
@@ -16795,7 +16795,7 @@ var require_frame = __commonJS({
     function generateMask() {
       if (bufIdx === BUFFER_SIZE) {
         bufIdx = 0;
-        crypto2.randomFillSync(buffer ??= Buffer.allocUnsafe(BUFFER_SIZE), 0, BUFFER_SIZE);
+        crypto.randomFillSync(buffer ??= Buffer.allocUnsafe(BUFFER_SIZE), 0, BUFFER_SIZE);
       }
       return [buffer[bufIdx++], buffer[bufIdx++], buffer[bufIdx++], buffer[bufIdx++]];
     }
@@ -16867,9 +16867,9 @@ var require_connection = __commonJS({
     var { Headers: Headers2, getHeadersList } = require_headers();
     var { getDecodeSplit } = require_util2();
     var { WebsocketFrameSend } = require_frame();
-    var crypto2;
+    var crypto;
     try {
-      crypto2 = require("node:crypto");
+      crypto = require("node:crypto");
     } catch {
     }
     function establishWebSocketConnection(url, protocols, client, ws, onEstablish, options) {
@@ -16889,7 +16889,7 @@ var require_connection = __commonJS({
         const headersList = getHeadersList(new Headers2(options.headers));
         request.headersList = headersList;
       }
-      const keyValue = crypto2.randomBytes(16).toString("base64");
+      const keyValue = crypto.randomBytes(16).toString("base64");
       request.headersList.append("sec-websocket-key", keyValue);
       request.headersList.append("sec-websocket-version", "13");
       for (const protocol of protocols) {
@@ -16919,7 +16919,7 @@ var require_connection = __commonJS({
             return;
           }
           const secWSAccept = response.headersList.get("Sec-WebSocket-Accept");
-          const digest = crypto2.createHash("sha1").update(keyValue + uid).digest("base64");
+          const digest = crypto.createHash("sha1").update(keyValue + uid).digest("base64");
           if (secWSAccept !== digest) {
             failWebsocketConnection(ws, "Incorrect hash received in Sec-WebSocket-Accept header.");
             return;
@@ -18633,12 +18633,14 @@ var require_undici = __commonJS({
   }
 });
 
-// dist/main-init.js
-var main_init_exports = {};
-__export(main_init_exports, {
-  runInit: () => runInit
+// dist/main-post-fix.js
+var main_post_fix_exports = {};
+__export(main_post_fix_exports, {
+  runPostFix: () => runPostFix
 });
-module.exports = __toCommonJS(main_init_exports);
+module.exports = __toCommonJS(main_post_fix_exports);
+var import_node_child_process4 = require("node:child_process");
+var import_node_fs = require("node:fs");
 
 // node_modules/@actions/core/lib/command.js
 var os = __toESM(require("os"), 1);
@@ -18711,36 +18713,8 @@ function escapeProperty(s) {
   return toCommandValue(s).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A").replace(/:/g, "%3A").replace(/,/g, "%2C");
 }
 
-// node_modules/@actions/core/lib/file-command.js
-var crypto = __toESM(require("crypto"), 1);
-var fs = __toESM(require("fs"), 1);
-var os2 = __toESM(require("os"), 1);
-function issueFileCommand(command, message) {
-  const filePath = process.env[`GITHUB_${command}`];
-  if (!filePath) {
-    throw new Error(`Unable to find environment variable for file command ${command}`);
-  }
-  if (!fs.existsSync(filePath)) {
-    throw new Error(`Missing file at path: ${filePath}`);
-  }
-  fs.appendFileSync(filePath, `${toCommandValue(message)}${os2.EOL}`, {
-    encoding: "utf8"
-  });
-}
-function prepareKeyValueMessage(key, value) {
-  const delimiter = `ghadelimiter_${crypto.randomUUID()}`;
-  const convertedValue = toCommandValue(value);
-  if (key.includes(delimiter)) {
-    throw new Error(`Unexpected input: name should not contain the delimiter "${delimiter}"`);
-  }
-  if (convertedValue.includes(delimiter)) {
-    throw new Error(`Unexpected input: value should not contain the delimiter "${delimiter}"`);
-  }
-  return `${key}<<${delimiter}${os2.EOL}${convertedValue}${os2.EOL}${delimiter}`;
-}
-
 // node_modules/@actions/core/lib/core.js
-var os4 = __toESM(require("os"), 1);
+var os3 = __toESM(require("os"), 1);
 
 // node_modules/@actions/http-client/lib/index.js
 var tunnel = __toESM(require_tunnel2(), 1);
@@ -19085,10 +19059,10 @@ var _summary = new Summary();
 var import_os2 = __toESM(require("os"), 1);
 
 // node_modules/@actions/io/lib/io-util.js
-var fs2 = __toESM(require("fs"), 1);
-var { chmod, copyFile, lstat, mkdir, open, readdir, rename, rm, rmdir, stat, symlink, unlink } = fs2.promises;
+var fs = __toESM(require("fs"), 1);
+var { chmod, copyFile, lstat, mkdir, open, readdir, rename, rm, rmdir, stat, symlink, unlink } = fs.promises;
 var IS_WINDOWS = process.platform === "win32";
-var READONLY = fs2.constants.O_RDONLY;
+var READONLY = fs.constants.O_RDONLY;
 
 // node_modules/@actions/exec/lib/toolrunner.js
 var IS_WINDOWS2 = process.platform === "win32";
@@ -19116,14 +19090,6 @@ function getInput(name, options) {
   }
   return val.trim();
 }
-function setOutput(name, value) {
-  const filePath = process.env["GITHUB_OUTPUT"] || "";
-  if (filePath) {
-    return issueFileCommand("OUTPUT", prepareKeyValueMessage(name, value));
-  }
-  process.stdout.write(os4.EOL);
-  issueCommand("set-output", { name }, toCommandValue(value));
-}
 function setFailed(message) {
   process.exitCode = ExitCode.Failure;
   error(message);
@@ -19135,7 +19101,7 @@ function warning(message, properties = {}) {
   issueCommand("warning", toCommandProperties(properties), message instanceof Error ? message.toString() : message);
 }
 function info(message) {
-  process.stdout.write(message + os4.EOL);
+  process.stdout.write(message + os3.EOL);
 }
 
 // dist/config.js
@@ -19284,20 +19250,6 @@ function validateState(obj) {
   }
   return true;
 }
-function createInitialState() {
-  return {
-    iterationCount: 0,
-    lastProcessedReviewId: null,
-    lastClaudeCommitSha: null,
-    lastCodexRequestCommentId: null,
-    lastCodexReviewReceivedAt: null,
-    lastFindingsHash: null,
-    findingsHashHistory: [],
-    status: "initialized",
-    stopReason: null,
-    previousCheckFailure: null
-  };
-}
 function serializeState(state) {
   const trimmed = {
     ...state,
@@ -19403,24 +19355,6 @@ async function readState(owner, name, pr, token) {
   }
   return { found: true, corrupted: false, state, commentId: parsed.id, commentUpdatedAt: parsed.updatedAt };
 }
-async function createStateComment(owner, name, pr, state, token) {
-  const body = serializeState(state);
-  const { stdout } = await execFileAsync("gh", [
-    "api",
-    "--method",
-    "POST",
-    `repos/${owner}/${name}/issues/${pr}/comments`,
-    "--field",
-    `body=${body}`,
-    "--jq",
-    ".id"
-  ], { env: buildGhEnv(token) });
-  const commentId = parseInt(stdout.trim(), 10);
-  if (isNaN(commentId)) {
-    throw new Error(`createStateComment: unexpected response from GitHub API: ${stdout.trim()}`);
-  }
-  return commentId;
-}
 async function updateStateComment(owner, name, commentId, state, token, options = {}) {
   const body = serializeState(state);
   const trimmedState = deserializeState(body);
@@ -19496,10 +19430,248 @@ function parseCommentSnapshot(stdout, context) {
   throw new Error(`${context}: unexpected response from GitHub API: ${stdout}`);
 }
 
-// dist/comment-poster.js
+// dist/check-runner.js
 var import_node_child_process2 = require("node:child_process");
 var import_node_util2 = require("node:util");
-var execFileAsync2 = (0, import_node_util2.promisify)(import_node_child_process2.execFile);
+var execAsync = (0, import_node_util2.promisify)(import_node_child_process2.exec);
+function removeAnsiSequences(output) {
+  return output.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+}
+function truncateIfNeeded(output) {
+  if (output.length <= 6e4) {
+    return output;
+  }
+  const lines = output.split("\n");
+  const headLines = lines.slice(0, 20).join("\n");
+  const tailLines = lines.slice(-50).join("\n");
+  const marker = "\n... (truncated) ...\n";
+  let result = headLines + marker + tailLines;
+  if (result.length > 6e4) {
+    result = result.slice(0, 6e4);
+  }
+  return result;
+}
+function sanitizeOutput(output) {
+  const cleaned = removeAnsiSequences(output);
+  return truncateIfNeeded(cleaned);
+}
+function extractErrorOutput(error2) {
+  if (error2 instanceof Error) {
+    const anyError = error2;
+    const stdout = anyError.stdout ? String(anyError.stdout) : "";
+    const stderr = anyError.stderr ? String(anyError.stderr) : "";
+    const message = anyError.message || String(error2);
+    return [stdout, stderr, message];
+  }
+  return ["", "", String(error2)];
+}
+async function runCheckCommand(checkCommand, modifiedFiles) {
+  const safeEnv = { ...process.env };
+  delete safeEnv.ANTHROPIC_API_KEY;
+  delete safeEnv.GITHUB_TOKEN;
+  delete safeEnv.GH_TOKEN;
+  for (const key of Object.keys(safeEnv)) {
+    if (key.startsWith("INPUT_ANTHROPIC") || key.startsWith("INPUT_GITHUB")) {
+      delete safeEnv[key];
+    }
+  }
+  try {
+    const { stdout, stderr } = await execAsync(checkCommand, {
+      timeout: 5 * 60 * 1e3,
+      // 5 minutes in milliseconds
+      encoding: "utf-8",
+      env: safeEnv
+    });
+    const combinedOutput = stdout + (stderr ? "\n" + stderr : "");
+    return {
+      success: true,
+      output: sanitizeOutput(combinedOutput)
+    };
+  } catch (error2) {
+    try {
+      if (modifiedFiles.length > 0) {
+        for (const file of modifiedFiles) {
+          (0, import_node_child_process2.execFileSync)("git", ["checkout", "--", file], {
+            encoding: "utf-8"
+          });
+        }
+      }
+    } catch (rollbackError) {
+      error(`Rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+    }
+    const [stdout, stderr, errorMessage] = extractErrorOutput(error2);
+    const combinedOutput = stdout + (stderr ? "\n" + stderr : "") + (errorMessage ? "\nError: " + errorMessage : "");
+    return {
+      success: false,
+      output: sanitizeOutput(combinedOutput)
+    };
+  }
+}
+
+// dist/scope-checker.js
+var DEFAULT_SCOPE_POLICY = {
+  maxFiles: 20,
+  maxLines: 1e3,
+  allowedPathPrefixes: ["src/", "tests/", "docs/"],
+  hardBlockPatterns: [
+    /^\.github\//,
+    /^node_modules\//,
+    /^dist\//,
+    /^package\.json$/,
+    /^package-lock\.json$/,
+    /^tsconfig\.json$/,
+    /^\.[^/]+$/
+  ]
+};
+function isUnsafePath(path) {
+  if (path.length === 0)
+    return true;
+  if (path.startsWith("/"))
+    return true;
+  if (path.startsWith("../") || path === "..")
+    return true;
+  return path.split("/").includes("..");
+}
+function checkScope(files, policy = DEFAULT_SCOPE_POLICY) {
+  const traversal = [];
+  const blocked = [];
+  const disallowed = [];
+  const binary = [];
+  let totalLines = 0;
+  for (const file of files) {
+    if (isUnsafePath(file.path)) {
+      traversal.push(file.path);
+      continue;
+    }
+    if (policy.hardBlockPatterns.some((re) => re.test(file.path))) {
+      blocked.push(file.path);
+      continue;
+    }
+    const isAllowed = policy.allowedPathPrefixes.some((prefix) => file.path.startsWith(prefix));
+    if (!isAllowed) {
+      disallowed.push(file.path);
+      continue;
+    }
+    if (file.added < 0 || file.deleted < 0) {
+      binary.push(file.path);
+      continue;
+    }
+    totalLines += file.added + file.deleted;
+  }
+  if (traversal.length > 0) {
+    return {
+      ok: false,
+      reason: "path_traversal",
+      message: `Refusing to apply diff containing path-traversal or absolute paths: ${traversal.join(", ")}`,
+      offendingPaths: traversal
+    };
+  }
+  if (blocked.length > 0) {
+    return {
+      ok: false,
+      reason: "hard_block_path",
+      message: `Diff touches hard-blocked paths (see docs/operations/security.md): ${blocked.join(", ")}`,
+      offendingPaths: blocked
+    };
+  }
+  if (disallowed.length > 0) {
+    return {
+      ok: false,
+      reason: "disallowed_path",
+      message: `Diff touches paths outside the allow-list (${policy.allowedPathPrefixes.join(", ")}): ${disallowed.join(", ")}`,
+      offendingPaths: disallowed
+    };
+  }
+  if (binary.length > 0) {
+    return {
+      ok: false,
+      reason: "binary_change",
+      message: `Diff contains binary changes which auto-fix cannot validate: ${binary.join(", ")}`,
+      offendingPaths: binary
+    };
+  }
+  if (files.length > policy.maxFiles) {
+    return {
+      ok: false,
+      reason: "too_many_files",
+      message: `Diff changes ${files.length} files (limit ${policy.maxFiles})`,
+      offendingPaths: files.map((f) => f.path)
+    };
+  }
+  if (totalLines > policy.maxLines) {
+    return {
+      ok: false,
+      reason: "too_many_lines",
+      message: `Diff changes ${totalLines} lines (limit ${policy.maxLines})`,
+      offendingPaths: files.map((f) => f.path)
+    };
+  }
+  return {
+    ok: true,
+    changedFiles: files.length,
+    totalLines
+  };
+}
+function parseGitNumstat(output) {
+  const lines = output.split("\n");
+  const files = [];
+  for (const raw of lines) {
+    if (raw.length === 0)
+      continue;
+    const parts = raw.split("	");
+    if (parts.length < 3)
+      continue;
+    const [a, d, ...rest] = parts;
+    const path = rest.join("	");
+    if (path.length === 0)
+      continue;
+    if (path.includes(" => "))
+      continue;
+    const added = a === "-" ? -1 : Number.parseInt(a, 10);
+    const deleted = d === "-" ? -1 : Number.parseInt(d, 10);
+    if (a !== "-" && !Number.isFinite(added) || d !== "-" && !Number.isFinite(deleted)) {
+      continue;
+    }
+    files.push({ path, added, deleted });
+  }
+  return files;
+}
+
+// dist/claude-code-repair-request.js
+var PREVIOUS_CHECK_FAILURE_MAX_CHARS = 2e4;
+function truncatePreviousCheckFailure(output, maxChars = PREVIOUS_CHECK_FAILURE_MAX_CHARS) {
+  if (output.length <= maxChars)
+    return output;
+  const buildHeader = (omitted2) => `[... truncated ${omitted2} leading characters of CHECK_COMMAND output; showing tail ...]
+`;
+  const headerBudget = buildHeader(output.length).length;
+  if (headerBudget >= maxChars) {
+    return output.slice(output.length - maxChars);
+  }
+  const tailRoom = maxChars - headerBudget;
+  const tail = output.slice(output.length - tailRoom);
+  const omitted = output.length - tail.length;
+  return buildHeader(omitted) + tail;
+}
+
+// dist/comment-poster.js
+var import_node_child_process3 = require("node:child_process");
+var import_node_util3 = require("node:util");
+var execFileAsync2 = (0, import_node_util3.promisify)(import_node_child_process3.execFile);
+var STOP_REASON_LABELS = {
+  no_findings: "no P0/P1/P2 findings",
+  max_iterations: "reached max iterations (MAX_REVIEW_ITERATIONS)",
+  loop_detected: "same findings detected in loop",
+  claude_api_error: "Claude API error",
+  test_failure: "CHECK_COMMAND failed after fix",
+  manual_stop: "manual stop requested",
+  state_corrupted: "hidden comment state corrupted",
+  state_conflict: "hidden comment state changed concurrently",
+  action_timeout: "Claude Code Action workflow timeout",
+  action_failure: "Claude Code Action exited with a non-zero status",
+  scope_violation: "repair touched paths or exceeded the size budget allowed for auto-fix",
+  max_turns_exceeded: "Claude Code Action exhausted the configured --max-turns budget"
+};
 async function postComment(owner, name, pr, body, token) {
   const { stdout } = await execFileAsync2("gh", [
     "api",
@@ -19517,62 +19689,410 @@ async function postComment(owner, name, pr, body, token) {
   }
   return commentId;
 }
+function escapeMarkdown(text) {
+  return text.replace(/[\r\n]+/g, " ").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/`{3,}/g, "``").trim();
+}
+async function postClaudeCodeActionFixSummary(owner, name, pr, iteration, changedPaths, summaryNote, token) {
+  const fileLines = changedPaths.length > 0 ? changedPaths.map((path) => `- \`${path}\``).join("\n") : "_(no files changed)_";
+  const noteSection = summaryNote ? `
+
+**Repair summary:**
+${escapeMarkdown(summaryNote)}` : "";
+  const body = `**Auto-fix applied (iteration ${iteration})**
+
+${fileLines}${noteSection}`;
+  return postComment(owner, name, pr, body, token);
+}
+async function postStopComment(owner, name, pr, stopReason, reviewId, remainingFindings, detail, token) {
+  const formattedReason = STOP_REASON_LABELS[stopReason];
+  const body = [
+    "Automation stopped.",
+    "",
+    `Reason: ${formattedReason}`,
+    `Last processed Codex review: #${reviewId}`,
+    `Open P0/P1/P2 findings remaining: ${remainingFindings}`,
+    `Detail: ${detail}`,
+    "Recommendation: manual intervention required."
+  ].join("\n");
+  return postComment(owner, name, pr, body, token);
+}
+async function postTestFailureComment(owner, name, pr, checkOutput, token) {
+  const safeOutput = checkOutput.replace(/`{3,}/g, "``");
+  const body = `**Auto-fix stopped: CHECK_COMMAND failed**
+
+\`\`\`
+${safeOutput}
+\`\`\`
+
+Changes have been rolled back. Manual intervention required.`;
+  return postComment(owner, name, pr, body, token);
+}
 async function postCodexReviewRequest(owner, name, pr, token) {
   return postComment(owner, name, pr, "@codex review", token);
 }
 
-// dist/main-init.js
+// dist/main-post-fix.js
 var defaultDeps = {
   readState,
-  createStateComment,
   updateStateComment,
+  runCheckCommand,
+  postClaudeCodeActionFixSummary,
   postCodexReviewRequest,
-  setSecret,
-  info,
-  warning,
-  setOutput
+  postStopComment,
+  postTestFailureComment,
+  setSecret: (secret) => setSecret(secret),
+  info: (message) => info(message),
+  warning: (message) => warning(message),
+  error: (message) => error(message),
+  gitDiffNumstat: () => (0, import_node_child_process4.execFileSync)("git", ["diff", "--numstat", "--no-renames", "HEAD"], {
+    encoding: "utf-8"
+  }),
+  gitListUntracked: () => (0, import_node_child_process4.execFileSync)("git", ["ls-files", "--others", "--exclude-standard"], {
+    encoding: "utf-8"
+  }),
+  readWorkingTreeFile: (path) => {
+    try {
+      const content = (0, import_node_fs.readFileSync)(path);
+      if (content.includes(0))
+        return null;
+      return content.toString("utf-8");
+    } catch {
+      return null;
+    }
+  },
+  readHeadSha: () => {
+    try {
+      return (0, import_node_child_process4.execFileSync)("git", ["rev-parse", "HEAD"], { encoding: "utf-8" }).trim();
+    } catch (error2) {
+      warning(`[post-fix] Could not read HEAD sha: ${error2 instanceof Error ? error2.message : String(error2)}`);
+      return "";
+    }
+  },
+  resetWorkingTree: () => {
+    (0, import_node_child_process4.execFileSync)("git", ["reset", "--hard", "HEAD"], { stdio: "inherit" });
+    (0, import_node_child_process4.execFileSync)("git", ["clean", "-ffd"], { stdio: "inherit" });
+  },
+  stagePaths: (paths) => {
+    if (paths.length === 0)
+      return;
+    (0, import_node_child_process4.execFileSync)("git", ["add", "--", ...paths], { stdio: "inherit" });
+  },
+  hasStagedChanges: () => {
+    try {
+      (0, import_node_child_process4.execFileSync)("git", ["diff", "--cached", "--quiet"], { stdio: "inherit" });
+      return false;
+    } catch {
+      return true;
+    }
+  },
+  commit: (message) => {
+    (0, import_node_child_process4.execFileSync)("git", ["commit", "-m", message], { stdio: "inherit" });
+  },
+  push: () => {
+    (0, import_node_child_process4.execFileSync)("git", ["push"], { stdio: "inherit" });
+  },
+  readActionExecutionFile: (path) => {
+    if (!path)
+      return null;
+    try {
+      return (0, import_node_fs.readFileSync)(path, "utf-8");
+    } catch {
+      return null;
+    }
+  }
 };
-async function runInit(config, deps = defaultDeps) {
+function readPostFixInputs() {
+  const commentId = parseInt(getInput("comment-id"), 10);
+  const iteration = parseInt(getInput("iteration"), 10);
+  const triggerCommentId = parseInt(getInput("trigger-comment-id") || "0", 10);
+  if (!Number.isFinite(commentId) || commentId <= 0) {
+    throw new Error(`[post-fix] Invalid input comment-id: ${getInput("comment-id")}`);
+  }
+  if (!Number.isFinite(iteration) || iteration <= 0) {
+    throw new Error(`[post-fix] Invalid input iteration: ${getInput("iteration")}`);
+  }
+  return {
+    commentId,
+    iteration,
+    triggerCommentId: Number.isFinite(triggerCommentId) ? triggerCommentId : 0,
+    checkCommand: getInput("check-command") || "npm run check",
+    prHeadRef: getInput("pr-head-ref"),
+    actionOutcome: getInput("action-outcome") || "success",
+    actionExecutionFile: getInput("action-execution-file") || ""
+  };
+}
+function detectMaxTurnsExceeded(executionFileContents) {
+  if (executionFileContents === null)
+    return false;
+  const haystack = executionFileContents.toLowerCase();
+  return haystack.includes("max_turns") || haystack.includes("max turns") || haystack.includes("maximum turns");
+}
+async function runPostFix(config, deps = defaultDeps, inputs = readPostFixInputs()) {
   deps.setSecret(config.githubToken);
   deps.setSecret(config.codexReviewRequestToken);
-  deps.info(`Initializing auto-review for PR #${config.prNumber}`);
-  const existing = await deps.readState(config.repoOwner, config.repoName, config.prNumber, config.githubToken);
-  let commentId;
-  let state = createInitialState();
-  if (existing.found) {
-    commentId = existing.commentId;
-    if (existing.state.status !== "initialized") {
-      deps.info(`Auto-review state is already ${existing.state.status}. Skipping init.`);
-      deps.setOutput("comment-id", String(commentId));
+  deps.info(`[post-fix] Starting post-fix for PR #${config.prNumber}, iteration ${inputs.iteration}, action outcome: ${inputs.actionOutcome}`);
+  const stateResult = await deps.readState(config.repoOwner, config.repoName, config.prNumber, config.githubToken);
+  if (!stateResult.found) {
+    deps.error("[post-fix] Hidden state comment is missing or corrupted at post-fix entry. Cannot proceed.");
+    return;
+  }
+  if (stateResult.commentId !== inputs.commentId) {
+    deps.warning(`[post-fix] State comment id changed since pre-fix (pre=${inputs.commentId}, current=${stateResult.commentId}). Using current id.`);
+  }
+  if (stateResult.state.status !== "fixing") {
+    deps.warning(`[post-fix] Expected status 'fixing' but found '${stateResult.state.status}'. Pre-fix may have short-circuited or another workflow ran. Skipping post-fix.`);
+    return;
+  }
+  const state = stateResult.state;
+  const commentId = stateResult.commentId;
+  let stateCommentUpdatedAt = stateResult.commentUpdatedAt;
+  async function updateStateCommentLocked(nextState, detail) {
+    try {
+      const result = await deps.updateStateComment(config.repoOwner, config.repoName, commentId, nextState, config.githubToken, stateCommentUpdatedAt ? { expectedUpdatedAt: stateCommentUpdatedAt } : void 0);
+      stateCommentUpdatedAt = result.updatedAt;
+      return true;
+    } catch (error2) {
+      if (!(error2 instanceof StateUpdateConflictError)) {
+        throw error2;
+      }
+      const message = error2 instanceof Error ? error2.message : String(error2);
+      deps.warning(`[post-fix] Hidden comment state conflict. ${message}`);
+      await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, "state_conflict", inputs.triggerCommentId, 0, `${detail} Hidden comment was updated by another workflow run before this run could safely persist its state.`, config.githubToken);
+      return false;
+    }
+  }
+  async function failureExit(opts) {
+    const previousCheckFailure = opts.preservePreviousCheckFailure && opts.postCheckFailureBody ? truncatePreviousCheckFailure(opts.postCheckFailureBody) : null;
+    const rolledBackHistory = opts.state.findingsHashHistory.slice(0, -1);
+    const rolledBackLastHash = rolledBackHistory.length > 0 ? rolledBackHistory[rolledBackHistory.length - 1].hash : null;
+    const stoppedState = {
+      ...opts.state,
+      iterationCount: Math.max(0, opts.state.iterationCount - 1),
+      findingsHashHistory: rolledBackHistory,
+      lastFindingsHash: rolledBackLastHash,
+      status: "stopped",
+      stopReason: opts.stopReason,
+      previousCheckFailure
+    };
+    if (!await updateStateCommentLocked(stoppedState, `Could not stop after ${opts.stopReason}.`)) {
       return;
     }
-    deps.info("Found incomplete initialized state comment, continuing init");
-  } else if (existing.corrupted && existing.commentId !== null) {
-    deps.warning("Found corrupted state comment, overwriting with fresh state");
-    commentId = existing.commentId;
-    await deps.updateStateComment(config.repoOwner, config.repoName, commentId, state, config.githubToken);
-  } else {
-    commentId = await deps.createStateComment(config.repoOwner, config.repoName, config.prNumber, state, config.githubToken);
-    deps.info(`Created state comment: ${commentId}`);
+    if (opts.stopReason === "test_failure" && opts.postCheckFailureBody) {
+      await deps.postTestFailureComment(config.repoOwner, config.repoName, config.prNumber, opts.postCheckFailureBody, config.githubToken);
+    } else {
+      await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, opts.stopReason, inputs.triggerCommentId, opts.remainingFindings ?? 0, opts.detail, config.githubToken);
+    }
   }
-  const reviewRequestId = await deps.postCodexReviewRequest(config.repoOwner, config.repoName, config.prNumber, config.codexReviewRequestToken);
-  deps.info(`Posted @codex review: comment ${reviewRequestId}`);
-  state = { ...state, status: "waiting_codex", lastCodexRequestCommentId: reviewRequestId };
-  await deps.updateStateComment(config.repoOwner, config.repoName, commentId, state, config.githubToken);
-  deps.info("Workflow A completed: status = waiting_codex");
-  deps.setOutput("comment-id", String(commentId));
+  const outcome = inputs.actionOutcome.toLowerCase();
+  if (outcome !== "success") {
+    deps.warning(`[post-fix] claude-code-action outcome=${inputs.actionOutcome}. Reverting working tree and stopping.`);
+    try {
+      deps.resetWorkingTree();
+    } catch (resetError) {
+      deps.error(`[post-fix] Failed to reset working tree after action failure: ${resetError instanceof Error ? resetError.message : String(resetError)}`);
+    }
+    let stopReason = "action_failure";
+    let detail = `claude-code-action exited with outcome=${inputs.actionOutcome}.`;
+    if (outcome === "cancelled") {
+      stopReason = "action_timeout";
+      detail = "claude-code-action step was cancelled, typically because the workflow job timeout was reached.";
+    } else if (outcome === "failure") {
+      const fileContents = deps.readActionExecutionFile(inputs.actionExecutionFile);
+      if (detectMaxTurnsExceeded(fileContents)) {
+        stopReason = "max_turns_exceeded";
+        detail = "claude-code-action exhausted the configured --max-turns budget.";
+      }
+    }
+    await failureExit({
+      config,
+      inputs,
+      state,
+      stopReason,
+      detail
+    });
+    return;
+  }
+  let numstat;
+  let untrackedRaw;
+  try {
+    numstat = deps.gitDiffNumstat();
+    untrackedRaw = deps.gitListUntracked();
+  } catch (error2) {
+    deps.error(`[post-fix] Failed to enumerate working-tree changes: ${error2 instanceof Error ? error2.message : String(error2)}`);
+    await failureExit({
+      config,
+      inputs,
+      state,
+      stopReason: "action_failure",
+      detail: "Could not enumerate working-tree changes via git diff / ls-files."
+    });
+    return;
+  }
+  const trackedChanges = parseGitNumstat(numstat);
+  const untrackedChanges = untrackedRaw.split("\n").map((line) => line.trim()).filter((line) => line.length > 0).map((path) => {
+    const content = deps.readWorkingTreeFile(path);
+    if (content === null) {
+      return { path, added: -1, deleted: -1 };
+    }
+    const added = content.length === 0 ? 0 : content.split("\n").length;
+    return { path, added, deleted: 0 };
+  });
+  const changedFiles = [...trackedChanges, ...untrackedChanges];
+  deps.info(`[post-fix] Detected ${changedFiles.length} changed file(s) in working tree (${trackedChanges.length} tracked, ${untrackedChanges.length} new).`);
+  if (changedFiles.length === 0) {
+    deps.warning("[post-fix] claude-code-action made no file changes. Treating as no-op success and re-requesting Codex review.");
+    const waitingState2 = {
+      ...state,
+      status: "waiting_codex",
+      previousCheckFailure: null
+    };
+    if (!await updateStateCommentLocked(waitingState2, "Could not return state to waiting_codex after no-op claude-code-action run.")) {
+      return;
+    }
+    try {
+      const reviewRequestId = await deps.postCodexReviewRequest(config.repoOwner, config.repoName, config.prNumber, config.codexReviewRequestToken);
+      const updated = {
+        ...waitingState2,
+        lastCodexRequestCommentId: reviewRequestId
+      };
+      await updateStateCommentLocked(updated, "Could not persist Codex review request comment id after no-op run.");
+    } catch (error2) {
+      deps.error(`[post-fix] Failed to re-request Codex review: ${error2 instanceof Error ? error2.message : String(error2)}`);
+    }
+    return;
+  }
+  const scopeResult = checkScope(changedFiles);
+  if (!scopeResult.ok) {
+    deps.warning(`[post-fix] Scope violation: ${scopeResult.message}`);
+    try {
+      deps.resetWorkingTree();
+    } catch (resetError) {
+      deps.error(`[post-fix] Failed to reset working tree after scope violation: ${resetError instanceof Error ? resetError.message : String(resetError)}`);
+    }
+    await failureExit({
+      config,
+      inputs,
+      state,
+      stopReason: "scope_violation",
+      detail: scopeResult.message
+    });
+    return;
+  }
+  deps.info(`[post-fix] Scope check passed: ${scopeResult.changedFiles} file(s), ${scopeResult.totalLines} line(s).`);
+  const modifiedFiles = changedFiles.map((f) => f.path);
+  const trackedModified = trackedChanges.map((f) => f.path);
+  deps.info(`[post-fix] Running CHECK_COMMAND: ${inputs.checkCommand}`);
+  const checkResult = await deps.runCheckCommand(inputs.checkCommand, trackedModified);
+  if (!checkResult.success) {
+    deps.error("[post-fix] CHECK_COMMAND failed. Reverting working tree (incl. untracked).");
+    try {
+      deps.resetWorkingTree();
+    } catch (resetError) {
+      deps.error(`[post-fix] Failed to reset working tree after CHECK_COMMAND failure: ${resetError instanceof Error ? resetError.message : String(resetError)}`);
+    }
+    await failureExit({
+      config,
+      inputs,
+      state,
+      stopReason: "test_failure",
+      detail: "CHECK_COMMAND failed after claude-code-action repair.",
+      postCheckFailureBody: checkResult.output,
+      preservePreviousCheckFailure: true
+    });
+    return;
+  }
+  deps.info("[post-fix] CHECK_COMMAND passed. Committing changes...");
+  try {
+    deps.stagePaths(modifiedFiles);
+  } catch (error2) {
+    deps.error(`[post-fix] git add failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
+    await failureExit({
+      config,
+      inputs,
+      state,
+      stopReason: "action_failure",
+      detail: "Failed to stage repaired files for commit."
+    });
+    return;
+  }
+  let commitSha = "";
+  if (deps.hasStagedChanges()) {
+    const commitMessage = [
+      `fix: auto-resolve P0/P1/P2 findings from Codex review (iteration ${inputs.iteration})`,
+      "",
+      "Generated by anthropics/claude-code-action@v1 (auto-review-loop).",
+      `Files: ${modifiedFiles.length}, lines: ${scopeResult.totalLines}.`
+    ].join("\n");
+    try {
+      deps.commit(commitMessage);
+      deps.push();
+    } catch (error2) {
+      deps.error(`[post-fix] commit/push failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
+      await failureExit({
+        config,
+        inputs,
+        state,
+        stopReason: "action_failure",
+        detail: "Failed to commit or push repaired changes."
+      });
+      return;
+    }
+    commitSha = deps.readHeadSha();
+    deps.info(`[post-fix] Committed and pushed: ${commitSha}`);
+  } else {
+    deps.warning("[post-fix] No staged changes after `git add`. Skipping commit; treating as no-op.");
+  }
+  await deps.postClaudeCodeActionFixSummary(config.repoOwner, config.repoName, config.prNumber, inputs.iteration, modifiedFiles, null, config.githubToken);
+  const waitingState = {
+    ...state,
+    status: "waiting_codex",
+    lastClaudeCommitSha: commitSha || state.lastClaudeCommitSha,
+    previousCheckFailure: null
+  };
+  if (!await updateStateCommentLocked(waitingState, "Could not return state to waiting_codex after committing fixes.")) {
+    return;
+  }
+  deps.info("[post-fix] Posting @codex review request...");
+  try {
+    const reviewRequestId = await deps.postCodexReviewRequest(config.repoOwner, config.repoName, config.prNumber, config.codexReviewRequestToken);
+    const updatedWaitingState = {
+      ...waitingState,
+      lastCodexRequestCommentId: reviewRequestId
+    };
+    if (!await updateStateCommentLocked(updatedWaitingState, "Could not persist the Codex review request comment id.")) {
+      return;
+    }
+    deps.info(`[post-fix] Phase 4 complete. Status: waiting_codex. Review request: ${reviewRequestId}`);
+  } catch (error2) {
+    deps.error(`[post-fix] Failed to post Codex review request: ${error2 instanceof Error ? error2.message : String(error2)}. State is waiting_codex. Manual '@codex review' comment may be needed.`);
+  }
 }
 async function run() {
-  await runInit(loadInitConfig());
+  await runPostFix(loadInitConfig());
 }
 if (process.env.VITEST !== "true") {
-  run().catch((error2) => {
+  run().catch(async (error2) => {
     setFailed(error2 instanceof Error ? error2.message : String(error2));
+    try {
+      const crashConfig = loadInitConfig();
+      const crashStateResult = await readState(crashConfig.repoOwner, crashConfig.repoName, crashConfig.prNumber, crashConfig.githubToken);
+      if (crashStateResult.found && crashStateResult.state.status === "fixing") {
+        warning("[post-fix] Crash recovery: resetting fixing \u2192 stopped (state_corrupted)");
+        const recoveredState = {
+          ...crashStateResult.state,
+          status: "stopped",
+          stopReason: "state_corrupted"
+        };
+        await updateStateComment(crashConfig.repoOwner, crashConfig.repoName, crashStateResult.commentId, recoveredState, crashConfig.githubToken, { expectedUpdatedAt: crashStateResult.commentUpdatedAt });
+      }
+    } catch (recoveryError) {
+      error(`[post-fix] Crash recovery failed: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`);
+    }
   });
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
-  runInit
+  runPostFix
 });
 /*! Bundled license information:
 

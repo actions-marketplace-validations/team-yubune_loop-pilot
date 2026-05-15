@@ -1,0 +1,112 @@
+name: "Auto Review Loop — pre-fix"
+description: "Phase 0–3 (label gate, state guards, debounce, findings, judge) and prompt assembly for claude-code-action."
+
+inputs:
+  github-token:
+    description: "GitHub token with contents:write, pull-requests:write, issues:write"
+    required: true
+  codex-review-request-token:
+    description: "Optional token from a Codex-connected user for posting @codex review"
+    required: false
+    default: ""
+  anthropic-api-key:
+    description: "Anthropic API key (forwarded to claude-code-action via the wrapping workflow)."
+    required: true
+  pr-number:
+    description: "Pull request number"
+    required: true
+  pr-head-ref:
+    description: "PR head branch ref name"
+    required: true
+  pr-title:
+    description: "PR title"
+    required: false
+    default: ""
+  trigger-comment-id:
+    description: "ID of the Codex summary comment or PR review that triggered this run"
+    required: false
+    default: "0"
+  trigger-comment-body:
+    description: "Body of the Codex summary comment or PR review that triggered this run"
+    required: false
+    default: ""
+  trigger-user-login:
+    description: "GitHub login of the user who posted the trigger comment or review"
+    required: false
+    default: ""
+  max-review-iterations:
+    description: "Maximum number of review-fix iterations"
+    required: false
+    default: "20"
+  debounce-seconds:
+    description: "Seconds to wait after Codex summary comment before collecting inline comments"
+    required: false
+    default: "90"
+  check-command:
+    description: "Shell command to run after applying fixes (test/lint/typecheck)"
+    required: false
+    default: "npm run check"
+  max-files-per-iteration:
+    description: "Maximum files to fix per iteration (kept for compatibility; not used by claude-code-action loop)"
+    required: false
+    default: "10"
+  max-input-tokens-per-file:
+    description: "Maximum estimated input tokens per file (kept for compatibility)"
+    required: false
+    default: "30000"
+  codex-bot-login:
+    description: "GitHub login of the Codex bot"
+    required: false
+    default: "chatgpt-codex-connector[bot]"
+  codex-review-marker:
+    description: "Text marker in Codex summary comment"
+    required: false
+    default: "Codex Review"
+  stabilize-interval-seconds:
+    description: "Polling interval (seconds) for comment count stabilization safeguard"
+    required: false
+    default: "10"
+  stabilize-count:
+    description: "Number of consecutive stable polls before considering comments settled"
+    required: false
+    default: "3"
+  auto-review-label:
+    description: "Label name required to run auto-review-fix loop. Empty falls back to 'auto-review-fix'."
+    required: false
+    default: ""
+  auto-review-full-auto:
+    description: "Set to 'true' to disable the label gate and run auto-review on every non-fork ready PR."
+    required: false
+    default: "false"
+  auto-review-restart-roles:
+    description: "Comma-separated roles allowed to run /restart-review."
+    required: false
+    default: "author,write,maintain,admin"
+  github-repository:
+    description: "Repository in owner/name format (auto-detected in GitHub Actions)"
+    required: false
+    default: ""
+
+outputs:
+  should_run:
+    description: "'true' when claude-code-action and post-fix should run for this trigger; 'false' otherwise."
+  prompt:
+    description: "Prompt to pass to anthropics/claude-code-action@v1 when should_run='true'."
+  iteration:
+    description: "Iteration count assigned by pre-fix (incremented before claude-code-action runs)."
+  check_command:
+    description: "CHECK_COMMAND that post-fix should run after the repair."
+  pr_head_ref:
+    description: "PR head branch name for post-fix to confirm checkout."
+  head_sha:
+    description: "Commit sha at PR HEAD before claude-code-action ran."
+  comment_id:
+    description: "Hidden state comment id for post-fix to update."
+  trigger_comment_id:
+    description: "Trigger comment id, echoed for post-fix telemetry."
+  findings_count:
+    description: "Number of P0/P1/P2 findings forwarded to claude-code-action."
+
+runs:
+  using: "node20"
+  main: "../../dist/pre-fix/index.cjs"

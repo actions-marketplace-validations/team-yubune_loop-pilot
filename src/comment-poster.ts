@@ -95,6 +95,37 @@ export async function postFixSummary(
 }
 
 /**
+ * Posts a summary comment after a successful claude-code-action repair iteration.
+ *
+ * Unlike `postFixSummary`, this variant takes only the changed file paths and
+ * an optional free-form note from claude-code-action's execution output, since
+ * the repair flow no longer surfaces per-edit explanations from the Anthropic
+ * SDK.
+ */
+export async function postClaudeCodeActionFixSummary(
+  owner: string,
+  name: string,
+  pr: number,
+  iteration: number,
+  changedPaths: string[],
+  summaryNote: string | null,
+  token: string,
+): Promise<number> {
+  const fileLines =
+    changedPaths.length > 0
+      ? changedPaths.map((path) => `- \`${path}\``).join("\n")
+      : "_(no files changed)_";
+
+  const noteSection = summaryNote
+    ? `\n\n**Repair summary:**\n${escapeMarkdown(summaryNote)}`
+    : "";
+
+  const body = `**Auto-fix applied (iteration ${iteration})**\n\n${fileLines}${noteSection}`;
+
+  return postComment(owner, name, pr, body, token);
+}
+
+/**
  * Posts a completion comment when all P0/P1/P2 findings have been resolved.
  */
 export async function postCompletionComment(

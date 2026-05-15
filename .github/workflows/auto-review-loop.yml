@@ -164,6 +164,8 @@ jobs:
           auto-review-label: ${{ vars.AUTO_REVIEW_LABEL || '' }}
           auto-review-full-auto: ${{ vars.AUTO_REVIEW_FULL_AUTO || 'false' }}
           auto-review-restart-roles: ${{ vars.AUTO_REVIEW_RESTART_ROLES || 'author,write,maintain,admin' }}
+          claude-code-model: ${{ vars.CLAUDE_CODE_MODEL || 'claude-opus-4-7' }}
+          claude-code-max-turns: ${{ vars.CLAUDE_CODE_MAX_TURNS || '40' }}
 
       # PoC: Save Codex comments as artifact for parser validation
       - name: Save Codex comments as artifact

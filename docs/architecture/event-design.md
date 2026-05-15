@@ -234,17 +234,29 @@ Workflow B は GitHub API で取得した `.head.repo.full_name` が空または
 - `findings_hash_history`（直近 N 回分）と比較し、同一指摘ループ → `status: stopped` で終了（→ [ループ検知](../specs/loop-detection.md)）
 - 上記以外 → Phase 3 へ
 
-**Phase 3: Claude 修正**
-- `status: fixing` に更新
-- PR ブランチを checkout
-- Claude API に findings を送信し、修正コードを取得（→ [Claude 修正エンジン仕様](../specs/claude-fix-engine.md)）
-- ファイルに適用
-- test / lint / typecheck 実行（→ [検証コマンドとロールバック](../operations/check-and-rollback.md)）
-- 成功 → commit / push、`iteration_count += 1`
-- 失敗 → `status: stopped` で終了
+**Phase 3: claude-code-action 修正（pre-fix → claude-code-action → post-fix の3-step composite）**
+
+Workflow B の `Run auto-fix loop` ステップは composite action（`loop/action.yml`）として 3 つのサブステップに分割されている。
+
+1. **pre-fix（`loop/pre-fix`、Node JS action）**
+   - `status: fixing` に更新（`iteration_count += 1`）
+   - `findings` から [`buildClaudeCodeRepairRequest`](../specs/claude-code-repair-request.md) でリペアリクエストを構築し、prompt を生成する
+   - GITHUB_OUTPUT に `should_run` / `prompt` / `iteration` / `comment_id` などを書き出す
+   - 早期 return（done / max_iterations / loop_detected）の場合は `should_run=false` を出力し、後続 step を skip する
+2. **`anthropics/claude-code-action@v1`（[Claude Code Action 実行制御](../operations/security.md#claude-code-action-実行制御)）**
+   - `if: steps.pre.outputs.should_run == 'true'`
+   - `claude_args` で `--model` / `--max-turns` / `--allowedTools`（`Read,Glob,Grep,Edit,Write,TodoWrite,Bash(<allowlist>)`）/ `--disallowedTools` を指定
+   - `Bash` allowlist: `npm ci` / `npm run check` / `npm test` / `npm run build` / `git status` / `git diff` / `git log`。`git commit` / `git push` は **意図的に除外**（commit 権限は post-fix が単独で持つ）
+   - 失敗時（`outcome=failure`）と timeout 時（`outcome=cancelled`）は post-fix 側で stop reason に変換する
+3. **post-fix（`loop/post-fix`、Node JS action）**
+   - `if: always() && steps.pre.outputs.should_run == 'true'`（claude-code-action 失敗時もスコープ検査と state 更新を走らせる）
+   - claude-code-action の `outcome` を判定: `success` 以外なら `git reset --hard HEAD` で working tree を巻き戻し、`stopped` (`action_failure` / `action_timeout` / `max_turns_exceeded`) で終了
+   - `git diff --numstat HEAD` → [`parseGitNumstat`](../../src/scope-checker.ts) → [`checkScope`](../../src/scope-checker.ts) で **20 files / 1000 lines / `src,tests,docs/` 以外を hard block**。違反時は revert + `stopped(scope_violation)`
+   - `CHECK_COMMAND` を実行。失敗時は revert + `stopped(test_failure)` + 失敗末尾を `state.previousCheckFailure` に保存（次 iteration の prompt の追加コンテキストになる）
+   - 成功時は変更ファイルを `git add ...` → `commit` → `push`（コミットメッセージ: `fix: auto-resolve P0/P1/P2 findings from Codex review (iteration {N})`）。`previousCheckFailure` を `null` にリセットして clean run の状態を保持
 
 **Phase 4: 再レビュー依頼**
-- `@codex review` を投稿する。`CODEX_REVIEW_REQUEST_TOKEN` が設定されている場合は接続済みユーザー PAT を使い、未設定時は `GITHUB_TOKEN` に fallback する
+- post-fix が `@codex review` を投稿する。`CODEX_REVIEW_REQUEST_TOKEN` が設定されている場合は接続済みユーザー PAT を使い、未設定時は `GITHUB_TOKEN` に fallback する
 - `status: waiting_codex` に更新
 
 **PoC で未検証の境界:**

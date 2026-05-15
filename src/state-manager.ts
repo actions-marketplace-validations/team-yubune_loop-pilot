@@ -359,6 +359,22 @@ async function fetchStateComment(
   return parseCommentSnapshot(stdout.trim(), "fetchStateComment");
 }
 
+/**
+ * Convert an ISO 8601 timestamp (e.g. `2026-05-14T21:42:19Z`) — the form
+ * GitHub's `updated_at` field returns — into the RFC 7231 IMF-fixdate
+ * (`Thu, 14 May 2026 21:42:19 GMT`) required by the HTTP
+ * `If-Unmodified-Since` header. Passing the raw ISO string makes GitHub
+ * reject the PATCH with a 4xx, which propagates as a workflow failure
+ * instead of the intended optimistic-lock 412 round-trip.
+ */
+export function toHttpDate(isoTimestamp: string): string {
+  const date = new Date(isoTimestamp);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`toHttpDate: invalid timestamp ${isoTimestamp}`);
+  }
+  return date.toUTCString();
+}
+
 async function patchStateComment(
   owner: string,
   name: string,
@@ -378,22 +394,46 @@ async function patchStateComment(
     "{body: .body, updated_at: .updated_at} | @json",
   ];
 
-  if (expectedUpdatedAt !== undefined) {
-    args.splice(1, 0, "--header", `If-Unmodified-Since: ${expectedUpdatedAt}`);
-  }
+  // Note: TY-139 originally added an `If-Unmodified-Since` header here for
+  // server-side conflict detection, but GitHub's issue-comment PATCH does
+  // not appear to honour this conditional reliably (real dogfood on PR #33
+  // produced a 4xx on every state mutation, leaving the loop deadlocked at
+  // `waiting_codex`). The preflight GET in `updateStateComment` still catches
+  // the common multi-second race window; if a sub-second TOCTOU race occurs
+  // the worst case is one stale write that the next iteration overwrites,
+  // not silent corruption. Re-introducing server-side enforcement requires a
+  // GitHub mechanism that actually works for this endpoint (e.g. ETag /
+  // If-Match if it ever ships).
 
   let stdout: string;
   try {
     ({ stdout } = await execFileAsync("gh", args, { env: buildGhEnv(token), maxBuffer: MAX_BUFFER }));
   } catch (err: unknown) {
-    // gh exits non-zero on HTTP 412 Precondition Failed (concurrent modification)
-    const message = err instanceof Error ? err.message : String(err);
-    if (expectedUpdatedAt !== undefined && (message.includes("412") || message.includes("Precondition Failed"))) {
+    // gh exits non-zero with the API response body on stdout/stderr;
+    // surface both so failure modes are visible in the workflow log.
+    const errIO = err as { stderr?: unknown; stdout?: unknown; message?: string };
+    const stderrText = errIO.stderr ? String(errIO.stderr) : "";
+    const stdoutText = errIO.stdout ? String(errIO.stdout) : "";
+    const baseMessage = errIO.message ?? (err instanceof Error ? err.message : String(err));
+    const fullMessage = [
+      baseMessage,
+      stderrText && `stderr: ${stderrText.trim()}`,
+      stdoutText && `stdout: ${stdoutText.trim()}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    // Treat 412 as a concurrent-modification signal whether it surfaces in
+    // err.message, stderr (gh's HTTP error line), or stdout (response body).
+    if (
+      expectedUpdatedAt !== undefined &&
+      (fullMessage.includes("412") || fullMessage.includes("Precondition Failed"))
+    ) {
       throw new StateUpdateConflictError(
-        `Hidden comment was modified concurrently (If-Unmodified-Since: ${expectedUpdatedAt})`,
+        `Hidden comment was modified concurrently (expectedUpdatedAt=${expectedUpdatedAt}): ${fullMessage}`,
       );
     }
-    throw err;
+    throw new Error(fullMessage);
   }
 
   return parseCommentSnapshot(stdout.trim(), "patchStateComment");

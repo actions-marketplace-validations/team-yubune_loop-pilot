@@ -227,4 +227,19 @@ describe("parseGitNumstat", () => {
     const parsed = parseGitNumstat(output);
     expect(parsed).toEqual([{ path: "src/c.ts", added: 2, deleted: 0 }]);
   });
+
+  it("drops compact rename notation paths so downstream `git add` cannot fail", () => {
+    // Without --no-renames git can emit `src/{old.ts => new.ts}` and similar
+    // synthetic paths. Passing them straight to `git add -- <path>` fails
+    // with a pathspec error. Defense-in-depth: this parser silently skips
+    // any line whose path contains the ` => ` token.
+    const output = [
+      "5\t3\tsrc/{old.ts => new.ts}",
+      "10\t0\t{src/old.ts => dst/new.ts}",
+      "2\t1\tsrc/keep.ts",
+    ].join("\n");
+    expect(parseGitNumstat(output)).toEqual([
+      { path: "src/keep.ts", added: 2, deleted: 1 },
+    ]);
+  });
 });

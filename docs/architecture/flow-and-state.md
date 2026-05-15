@@ -71,24 +71,39 @@ GitHub Actions 内で `sleep $DEBOUNCE_SECONDS` を使う場合、**ランナー
 
 ---
 
-### 4. Claude 修正
+### 4. Claude Code Action 修正（pre-fix → claude-code-action → post-fix）
 
-> 詳細な仕様は [Claude 修正エンジン仕様](../specs/claude-fix-engine.md) を参照。
+> 詳細な仕様は [Claude Code Action 実行制御](../operations/security.md#claude-code-action-実行制御) と [`claude-code-repair-request.md`](../specs/claude-code-repair-request.md) を参照。
+>
+> 旧 [Claude 修正エンジン仕様](../specs/claude-fix-engine.md)（Anthropic SDK + `edit_file` 直適用）は TY-236 / TY-237 で superseded。
 
-**PoC 実測:** PR #7 で Claude が P1 指摘に対する単一 edit を返し、Workflow B が適用、`CHECK_COMMAND`、commit/push まで成功した。複数 edit、空白正規化、複数マッチ、同一指摘ループ停止はユニットテスト済みだが、PR #7 の E2E では踏んでいない。
+**PoC 実測:** PR #7 で旧 `claude-fix-engine` 経路が単一 edit + `CHECK_COMMAND` + commit/push まで成功。新しい claude-code-action 経路の dogfood 結果は本 PR の merge 後に追記する。
 
-処理:
-- `status` を `fixing` に更新
-- PR ブランチを checkout
-- findings をファイル単位でグループ化
-- ファイルごとに Claude API（Opus）を呼び出し、`edit_file` ツール呼び出しを受け取る
-- 各 `edit_file` の `old_code` → `new_code` をファイルに適用（適用失敗時の挙動は [Claude 修正エンジン仕様](../specs/claude-fix-engine.md#応答適用方式-tool-usefunction-calling) を参照）
-- 全ファイル適用後、test / lint / typecheck を実行（→ [検証コマンドとロールバック](../operations/check-and-rollback.md)）
-- 成功したら commit / push
-  - **コミットメッセージ形式:** `fix: auto-resolve P0/P1 findings from Codex review (iteration {N})`。コミット本文には各 `explanation` の要約を箇条書きで記載する。言語は英語で統一する
-- PR に修正内容を要約コメント（`gh pr comment`、各 `explanation` を転記。**コメントの言語は英語で統一する**）
-- iteration_count を +1
-- `last_claude_commit_sha` を更新
+`Run auto-fix loop` ステップは `loop/action.yml`（composite）で 3 つに分かれる。`fixing` 状態は **pre-fix の冒頭で確定し、post-fix の終端で `waiting_codex`（成功）か `stopped`（失敗）に遷移する** ため、`fixing` の窓は composite の 1 invocation 内に閉じる。
+
+#### 4-1. pre-fix
+- ラベルゲート / `/restart-review` / state guard / debounce / Codex inline comment 取得 / Phase 2 判定（done / max_iterations / loop_detected）を実行
+- judge が通過した場合のみ `iteration_count += 1` で `status: fixing` に遷移し、findings から [`buildClaudeCodeRepairRequest`](../specs/claude-code-repair-request.md) → [`buildClaudeCodeRepairPrompt`](../specs/claude-code-repair-request.md) で prompt を組み立てる
+- `state.previousCheckFailure` が非 null の場合は prompt の `## Previous CHECK_COMMAND Failure` セクションに転記し、claude-code-action が前回失敗を踏まえた修正を出せるようにする
+- GITHUB_OUTPUT に `should_run=true` / `prompt` / `iteration` / `comment_id` などを書き出す。早期 return 時は `should_run=false` を出力
+
+#### 4-2. anthropics/claude-code-action@v1
+- `prompt: ${{ steps.pre.outputs.prompt }}` で起動
+- `claude_args`: `--model ${{ vars.CLAUDE_CODE_MODEL || 'claude-opus-4-7' }}` / `--max-turns 40` / `--allowedTools "Read,Glob,Grep,Edit,Write,TodoWrite,Bash(npm ci),Bash(npm run check),Bash(npm test),Bash(npm run build),Bash(git status),Bash(git diff),Bash(git log)"` / `--disallowedTools "WebFetch,WebSearch,Task,NotebookEdit"`
+- `git commit` / `git push` を **bash allowlist に含めない**ことで、commit 権限は post-fix に閉じる
+- `allowed_bots: ""`（直接呼び出しのみ、bot コメント由来の trigger 経路は使わない）
+
+#### 4-3. post-fix
+- claude-code-action の `outcome` を確認:
+  - `cancelled` → `git reset --hard HEAD` + `stopped(action_timeout)`
+  - `failure` → execution file から max-turns ヒットを推定し、該当時 `stopped(max_turns_exceeded)`、それ以外 `stopped(action_failure)`
+- `git diff --numstat HEAD` → [`parseGitNumstat`](../../src/scope-checker.ts) → [`checkScope`](../../src/scope-checker.ts):
+  - 違反（`scope_violation`）時は `git reset --hard HEAD` + `stopped(scope_violation)` + PR コメント
+  - 受理時は変更ファイル一覧を modifiedFiles として保持
+- [`runCheckCommand`](../../src/check-runner.ts) を実行:
+  - 失敗時は check-runner が modifiedFiles をロールバックした後、tail を `state.previousCheckFailure` に保存し `stopped(test_failure)`
+  - 成功時は `git add -- <modifiedFiles>` → `git commit -m "fix: auto-resolve P0/P1/P2 findings from Codex review (iteration {N})"` → `git push`
+- 成功 commit 後: `last_claude_commit_sha` を更新、`previousCheckFailure` を `null` にリセット、修正サマリ（変更ファイル一覧）を PR コメント、`status: waiting_codex` に更新、`@codex review` を再投稿
 
 ---
 
@@ -188,7 +203,8 @@ PR ごとに以下の状態を持つ。
 | `last_findings_hash` | 最新 iteration の findings ハッシュ。簡易比較用 |
 | `findings_hash_history` | 直近 N 回分（推奨: 3回）の findings ハッシュ。振動パターン（A→B→A）を含むループ検知に使用。最大件数を超えたら古いものから削除する。**hidden comment にはハッシュのみ保持し `normalized_set` は保持しない**（サイズ制限を参照）。ループ検知はハッシュの完全一致のみで判定する（部分一致判定はワークフロー実行中のメモリ上でのみ行う。詳細は [ループ検知](../specs/loop-detection.md) を参照） |
 | `status` | 現在の状態（後述の状態遷移を参照） |
-| `stop_reason` | 停止理由。`no_findings`（正常終了）、`max_iterations`、`loop_detected`、`claude_api_error`、`test_failure`、`manual_stop`、`state_corrupted`、`state_conflict` のいずれか |
+| `stop_reason` | 停止理由。`no_findings`（正常終了）、`max_iterations`、`loop_detected`、`claude_api_error`、`test_failure`、`manual_stop`、`state_corrupted`、`state_conflict`、`action_timeout`、`action_failure`、`scope_violation`、`max_turns_exceeded` のいずれか。後者 4 つは claude-code-action 経路で追加された停止理由（[security.md](../operations/security.md#claude-code-action-実行制御) 参照） |
+| `previous_check_failure` | 前回 iteration の `CHECK_COMMAND` 失敗 stdout/stderr の末尾（最大 20,000 文字、tail-preserving truncation）。次 iteration の claude-code-action prompt の `## Previous CHECK_COMMAND Failure` セクションに転記される。clean run / claude-code-action 失敗時は `null` |
 
 ### 状態遷移
 

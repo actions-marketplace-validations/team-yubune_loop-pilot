@@ -1,0 +1,607 @@
+import { execFileSync } from "node:child_process";
+import * as core from "@actions/core";
+import {
+  loadConfig,
+  loadInitConfig,
+  DEFAULT_AUTO_REVIEW_LABEL,
+  type Config,
+} from "./config.js";
+import {
+  createInitialState,
+  readState as defaultReadState,
+  StateUpdateConflictError,
+  updateStateComment as defaultUpdateStateComment,
+} from "./state-manager.js";
+import {
+  fetchReviewComments as defaultFetchReviewComments,
+  filterAndParseComments,
+  stabilizeReviewComments as defaultStabilizeReviewComments,
+} from "./review-collector.js";
+import { computeFindingsHash } from "./findings-hash.js";
+import { isLoop } from "./loop-detector.js";
+import {
+  postCompletionComment as defaultPostCompletionComment,
+  postStopComment as defaultPostStopComment,
+  postInitIncompleteComment as defaultPostInitIncompleteComment,
+} from "./comment-poster.js";
+import {
+  fetchPrLabels as defaultFetchPrLabels,
+  isAutoReviewAllowed,
+} from "./pr-labels.js";
+import {
+  handleRestartCommand as defaultHandleRestartCommand,
+  isRestartCommandLike,
+} from "./restart-command.js";
+import {
+  buildClaudeCodeRepairRequest,
+  buildClaudeCodeRepairPrompt,
+} from "./claude-code-repair-request.js";
+import type { Finding, PrContext, ReviewState } from "./types.js";
+
+/** Pause execution for the given number of milliseconds. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Outputs emitted by the pre-fix step for downstream composite-action steps.
+ *
+ * `should_run` gates whether claude-code-action and the post-fix step run.
+ * When `should_run === "false"` the post-fix step is skipped; pre-fix has
+ * already finalized state (done / stopped) and the loop is over for this
+ * trigger.
+ */
+export type PreFixOutputName =
+  | "should_run"
+  | "prompt"
+  | "iteration"
+  | "check_command"
+  | "pr_head_ref"
+  | "head_sha"
+  | "comment_id"
+  | "trigger_comment_id"
+  | "findings_count";
+
+export interface PreFixDeps {
+  readState: typeof defaultReadState;
+  updateStateComment: typeof defaultUpdateStateComment;
+  fetchReviewComments: typeof defaultFetchReviewComments;
+  stabilizeReviewComments: typeof defaultStabilizeReviewComments;
+  postCompletionComment: typeof defaultPostCompletionComment;
+  postStopComment: typeof defaultPostStopComment;
+  postInitIncompleteComment: typeof defaultPostInitIncompleteComment;
+  fetchPrLabels: typeof defaultFetchPrLabels;
+  handleRestartCommand: typeof defaultHandleRestartCommand;
+  setSecret: (secret: string) => void;
+  setOutput: (name: PreFixOutputName, value: string) => void;
+  info: (message: string) => void;
+  warning: (message: string) => void;
+  error: (message: string) => void;
+  sleep: (ms: number) => Promise<void>;
+  now: () => Date;
+  /** Reads HEAD sha. Returns "" on failure. */
+  readHeadSha: () => string;
+  /** Best-effort `git checkout <ref>`. Failure is logged but non-fatal. */
+  checkoutBranch: (ref: string) => void;
+}
+
+const defaultDeps: PreFixDeps = {
+  readState: defaultReadState,
+  updateStateComment: defaultUpdateStateComment,
+  fetchReviewComments: defaultFetchReviewComments,
+  stabilizeReviewComments: defaultStabilizeReviewComments,
+  postCompletionComment: defaultPostCompletionComment,
+  postStopComment: defaultPostStopComment,
+  postInitIncompleteComment: defaultPostInitIncompleteComment,
+  fetchPrLabels: defaultFetchPrLabels,
+  handleRestartCommand: defaultHandleRestartCommand,
+  setSecret: (secret) => core.setSecret(secret),
+  setOutput: (name, value) => core.setOutput(name, value),
+  info: (message) => core.info(message),
+  warning: (message) => core.warning(message),
+  error: (message) => core.error(message),
+  sleep,
+  now: () => new Date(),
+  readHeadSha: () => {
+    try {
+      return execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf-8" }).trim();
+    } catch (error) {
+      core.warning(
+        `[pre-fix] Could not read HEAD sha: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return "";
+    }
+  },
+  checkoutBranch: (ref) => {
+    // A failure here means the workflow cannot operate on the intended PR
+    // ref (e.g. force-push / branch-rename race). Propagating the error
+    // lets the outer crash-recovery demote `fixing` back to a terminal
+    // status; swallowing it here would let claude-code-action and post-fix
+    // run against whatever ref happens to be checked out, producing
+    // commits on the wrong branch or surprise push failures.
+    execFileSync("git", ["checkout", ref], { stdio: "inherit" });
+  },
+};
+
+/**
+ * Run the pre-fix phase of Workflow B.
+ *
+ * Performs Phase 0 (label gate), Phase 1 (state guards), debounce, findings
+ * collection, Phase 2 (judge: done / max-iterations / loop), and the first
+ * half of Phase 3 (transition to "fixing"). On success, emits the prompt and
+ * execution context for the downstream `claude-code-action` and `post-fix`
+ * steps via GITHUB_OUTPUT (`should_run=true`). On any short-circuit (label
+ * gate, terminal status, judge stop, restart command), emits
+ * `should_run=false`.
+ */
+export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps): Promise<void> {
+  deps.setSecret(config.anthropicApiKey);
+  deps.setSecret(config.githubToken);
+  deps.setSecret(config.codexReviewRequestToken);
+
+  // Default to should_run=false so any early return leaves the gate closed.
+  deps.setOutput("should_run", "false");
+
+  const triggerCommentId = config.triggerCommentId;
+  const prHeadRef = config.prHeadRef;
+  if (!prHeadRef) {
+    throw new Error(
+      "[pre-fix] pr-head-ref is required but not set. Cannot determine target branch.",
+    );
+  }
+
+  deps.info(
+    `[pre-fix] Starting Workflow B for PR #${config.prNumber}, trigger comment: ${triggerCommentId}`,
+  );
+
+  // ─── Phase 0: Label gate ──────────────────────────────────────────────────
+  const isCommandTrigger = isRestartCommandLike(config.triggerCommentBody);
+  if (!config.autoReviewFullAuto && !isCommandTrigger) {
+    const effectiveLabel = config.autoReviewLabel || DEFAULT_AUTO_REVIEW_LABEL;
+    const labels = await deps.fetchPrLabels(
+      config.repoOwner,
+      config.repoName,
+      config.prNumber,
+      config.githubToken,
+    );
+    if (!isAutoReviewAllowed(effectiveLabel, labels)) {
+      deps.info(
+        `[pre-fix] Required label '${effectiveLabel}' is not present on PR #${config.prNumber}. Skipping.`,
+      );
+      return;
+    }
+  }
+
+  // ─── Phase 1: State + Guard ──────────────────────────────────────────────
+  const stateResult = await deps.readState(
+    config.repoOwner,
+    config.repoName,
+    config.prNumber,
+    config.githubToken,
+  );
+  let stateCommentUpdatedAt =
+    stateResult.found || stateResult.corrupted
+      ? stateResult.commentUpdatedAt
+      : undefined;
+
+  async function updateStateCommentLocked(
+    targetCommentId: number,
+    nextState: ReviewState,
+    detail: string,
+  ): Promise<boolean> {
+    try {
+      const result = await deps.updateStateComment(
+        config.repoOwner,
+        config.repoName,
+        targetCommentId,
+        nextState,
+        config.githubToken,
+        stateCommentUpdatedAt
+          ? { expectedUpdatedAt: stateCommentUpdatedAt }
+          : undefined,
+      );
+      stateCommentUpdatedAt = result.updatedAt;
+      return true;
+    } catch (error) {
+      if (!(error instanceof StateUpdateConflictError)) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      deps.warning(`[pre-fix] Hidden comment state conflict. ${message}`);
+      await deps.postStopComment(
+        config.repoOwner,
+        config.repoName,
+        config.prNumber,
+        "state_conflict",
+        triggerCommentId,
+        0,
+        `${detail} Hidden comment was updated by another workflow run before this run could safely persist its state. Re-run after the active workflow finishes if needed.`,
+        config.githubToken,
+      );
+      return false;
+    }
+  }
+
+  if (isCommandTrigger) {
+    const restartResult = await deps.handleRestartCommand({
+      owner: config.repoOwner,
+      repo: config.repoName,
+      prNumber: config.prNumber,
+      triggerCommentId,
+      triggerCommentBody: config.triggerCommentBody,
+      triggerUserLogin: config.triggerUserLogin,
+      restartRoles: config.autoReviewRestartRoles,
+      githubToken: config.githubToken,
+      codexReviewRequestToken: config.codexReviewRequestToken,
+      stateResult,
+    });
+    if (restartResult.handled) {
+      return;
+    }
+  }
+
+  if (!stateResult.found && !stateResult.corrupted) {
+    deps.info("[pre-fix] No state found. Workflow A has not run. Skipping.");
+    return;
+  }
+
+  if (!stateResult.found && stateResult.corrupted) {
+    deps.error("[pre-fix] Hidden comment found but state JSON is corrupted.");
+    if (stateResult.commentId !== null) {
+      const corruptedState: ReviewState = {
+        ...createInitialState(),
+        status: "stopped",
+        stopReason: "state_corrupted",
+      };
+      if (
+        !(await updateStateCommentLocked(
+          stateResult.commentId,
+          corruptedState,
+          "Could not mark corrupted hidden state as stopped.",
+        ))
+      )
+        return;
+    }
+    await deps.postStopComment(
+      config.repoOwner,
+      config.repoName,
+      config.prNumber,
+      "state_corrupted",
+      triggerCommentId,
+      0,
+      "Hidden comment state JSON is corrupted. Manual re-initialization required.",
+      config.githubToken,
+    );
+    return;
+  }
+
+  if (!stateResult.found) {
+    return;
+  }
+  const { state } = stateResult;
+  const { commentId } = stateResult;
+
+  if (state.status === "initialized") {
+    deps.info("[pre-fix] State is 'initialized' — Workflow A incomplete.");
+    await deps.postInitIncompleteComment(
+      config.repoOwner,
+      config.repoName,
+      config.prNumber,
+      config.githubToken,
+    );
+    return;
+  }
+
+  if (state.status === "stopped" || state.status === "done") {
+    deps.info(`[pre-fix] Status is '${state.status}'. Skipping.`);
+    return;
+  }
+
+  if (state.status === "fixing") {
+    const STALE_THRESHOLD_MS = 30 * 60 * 1000;
+    const fixingStartedAt = state.lastCodexReviewReceivedAt;
+
+    if (fixingStartedAt === null) {
+      deps.warning(
+        "[pre-fix] Status is 'fixing' with null timestamp. Treating as stale.",
+      );
+    }
+
+    const elapsed = deps.now().getTime() - new Date(fixingStartedAt ?? 0).getTime();
+
+    if (fixingStartedAt !== null && elapsed < STALE_THRESHOLD_MS) {
+      deps.info(
+        `[pre-fix] Status is 'fixing' (started ${Math.round(elapsed / 1000)}s ago). Skipping.`,
+      );
+      return;
+    }
+
+    deps.warning(
+      `[pre-fix] Status stuck in 'fixing' for ${Math.round(elapsed / 60000)}min. Recovering.`,
+    );
+    const recoveredState: ReviewState = {
+      ...state,
+      status: "stopped",
+      stopReason: "state_corrupted",
+    };
+    if (
+      !(await updateStateCommentLocked(
+        commentId,
+        recoveredState,
+        "Could not recover stale fixing state.",
+      ))
+    )
+      return;
+    await deps.postStopComment(
+      config.repoOwner,
+      config.repoName,
+      config.prNumber,
+      "state_corrupted",
+      triggerCommentId,
+      0,
+      "Previous fixing state timed out — recovered automatically",
+      config.githubToken,
+    );
+    return;
+  }
+
+  if (state.status !== "waiting_codex") {
+    deps.warning(
+      `[pre-fix] Unexpected status '${state.status}'. Only 'waiting_codex' is processable. Skipping.`,
+    );
+    return;
+  }
+
+  if (
+    triggerCommentId !== 0 &&
+    state.lastProcessedReviewId === triggerCommentId
+  ) {
+    deps.info(
+      `[pre-fix] Trigger comment ${triggerCommentId} already processed. Skipping.`,
+    );
+    return;
+  }
+
+  // ─── Debounce ─────────────────────────────────────────────────────────────
+  deps.info(`[pre-fix] Debouncing ${config.debounceSeconds}s...`);
+  await deps.sleep(config.debounceSeconds * 1000);
+
+  // ─── Collect Findings ────────────────────────────────────────────────────
+  deps.info("[pre-fix] Fetching review comments...");
+  const fetchedComments = await deps.fetchReviewComments(
+    config.repoOwner,
+    config.repoName,
+    config.prNumber,
+    config.githubToken,
+  );
+  const rawComments = await deps.stabilizeReviewComments(fetchedComments, {
+    botLogin: config.codexBotLogin,
+    lastReceivedAt: state.lastCodexReviewReceivedAt,
+    triggerSummaryBody: config.triggerCommentBody,
+    intervalMs: config.stabilizeIntervalSeconds * 1000,
+    stablePolls: config.stabilizeCount,
+    maxWaitMs: config.debounceSeconds * 1000,
+    fetchComments: () =>
+      deps.fetchReviewComments(
+        config.repoOwner,
+        config.repoName,
+        config.prNumber,
+        config.githubToken,
+      ),
+    sleep: deps.sleep,
+    log: (message) => deps.info(message),
+  });
+
+  const findings: Finding[] = filterAndParseComments(
+    rawComments,
+    config.codexBotLogin,
+    state.lastCodexReviewReceivedAt,
+  );
+
+  deps.info(`[pre-fix] Found ${findings.length} P0/P1/P2 findings.`);
+
+  // ─── Phase 2: Judge ───────────────────────────────────────────────────────
+  const latestCommentTime = rawComments
+    .filter((c) => c.user.login === config.codexBotLogin)
+    .reduce(
+      (max, c) => (c.createdAt > max ? c.createdAt : max),
+      state.lastCodexReviewReceivedAt ?? "",
+    );
+
+  const updatedStateBase: ReviewState = {
+    ...state,
+    lastProcessedReviewId: triggerCommentId || state.lastProcessedReviewId,
+    lastCodexReviewReceivedAt: latestCommentTime || deps.now().toISOString(),
+  };
+
+  if (findings.length === 0) {
+    deps.info("[pre-fix] No findings. Marking done.");
+    const doneState: ReviewState = {
+      ...updatedStateBase,
+      status: "done",
+      stopReason: "no_findings",
+    };
+    if (
+      !(await updateStateCommentLocked(
+        commentId,
+        doneState,
+        "Could not mark auto-review as done.",
+      ))
+    )
+      return;
+    await deps.postCompletionComment(
+      config.repoOwner,
+      config.repoName,
+      config.prNumber,
+      doneState.iterationCount,
+      config.githubToken,
+    );
+    return;
+  }
+
+  if (state.iterationCount >= config.maxReviewIterations) {
+    deps.info(
+      `[pre-fix] Iteration count ${state.iterationCount} >= max ${config.maxReviewIterations}. Stopping.`,
+    );
+    const stoppedState: ReviewState = {
+      ...updatedStateBase,
+      status: "stopped",
+      stopReason: "max_iterations",
+    };
+    if (
+      !(await updateStateCommentLocked(
+        commentId,
+        stoppedState,
+        "Could not stop after reaching the max iteration limit.",
+      ))
+    )
+      return;
+    await deps.postStopComment(
+      config.repoOwner,
+      config.repoName,
+      config.prNumber,
+      "max_iterations",
+      triggerCommentId,
+      findings.length,
+      `Reached MAX_REVIEW_ITERATIONS (${config.maxReviewIterations})`,
+      config.githubToken,
+    );
+    return;
+  }
+
+  if (isLoop(findings, state.findingsHashHistory)) {
+    deps.info("[pre-fix] Loop detected. Stopping.");
+    const stoppedState: ReviewState = {
+      ...updatedStateBase,
+      status: "stopped",
+      stopReason: "loop_detected",
+    };
+    if (
+      !(await updateStateCommentLocked(
+        commentId,
+        stoppedState,
+        "Could not stop after detecting a findings loop.",
+      ))
+    )
+      return;
+    await deps.postStopComment(
+      config.repoOwner,
+      config.repoName,
+      config.prNumber,
+      "loop_detected",
+      triggerCommentId,
+      findings.length,
+      "Same findings hash detected in previous iteration",
+      config.githubToken,
+    );
+    return;
+  }
+
+  // ─── Phase 3 (first half): Transition to "fixing" ────────────────────────
+  const currentHash = computeFindingsHash(findings);
+  const newIteration = state.iterationCount + 1;
+  const updatedHashHistory = [
+    ...state.findingsHashHistory,
+    { iteration: newIteration, hash: currentHash },
+  ];
+
+  const fixingState: ReviewState = {
+    ...updatedStateBase,
+    iterationCount: newIteration,
+    status: "fixing",
+    lastFindingsHash: currentHash,
+    findingsHashHistory: updatedHashHistory,
+  };
+  if (
+    !(await updateStateCommentLocked(
+      commentId,
+      fixingState,
+      "Could not claim the hidden comment state for fixing.",
+    ))
+  )
+    return;
+
+  // The workflow already checked out the PR ref before this step runs, but
+  // a recovery / retry may have left the working tree on a different ref.
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._\-/]*$/.test(prHeadRef) || prHeadRef.includes("..")) {
+    throw new Error(`[pre-fix] Invalid branch name: ${prHeadRef}`);
+  }
+  deps.checkoutBranch(prHeadRef);
+  const headSha = deps.readHeadSha();
+
+  // ─── Build claude-code-action prompt ─────────────────────────────────────
+  const prContext: PrContext = {
+    number: config.prNumber,
+    title: config.prTitle,
+    branch: prHeadRef,
+  };
+
+  const repairRequest = buildClaudeCodeRepairRequest({
+    prContext,
+    headSha,
+    findings,
+    iteration: fixingState.iterationCount,
+    maxIterations: config.maxReviewIterations,
+    checkCommand: config.checkCommand,
+    previousCheckFailure: state.previousCheckFailure ?? null,
+  });
+  const prompt = buildClaudeCodeRepairPrompt(repairRequest);
+
+  deps.setOutput("should_run", "true");
+  deps.setOutput("prompt", prompt);
+  deps.setOutput("iteration", String(fixingState.iterationCount));
+  deps.setOutput("check_command", config.checkCommand);
+  deps.setOutput("pr_head_ref", prHeadRef);
+  deps.setOutput("head_sha", headSha);
+  deps.setOutput("comment_id", String(commentId));
+  deps.setOutput("trigger_comment_id", String(triggerCommentId));
+  deps.setOutput("findings_count", String(findings.length));
+
+  deps.info(
+    `[pre-fix] Phase 3 prep complete. iteration=${fixingState.iterationCount}, findings=${findings.length}.`,
+  );
+}
+
+async function run(): Promise<void> {
+  await runPreFix(loadConfig());
+}
+
+if (process.env.VITEST !== "true") {
+  run().catch(async (error) => {
+    core.setFailed(error instanceof Error ? error.message : String(error));
+
+    // Crash recovery: if state was set to "fixing" before we crashed, demote
+    // it back to stopped(state_corrupted) so the next trigger can proceed.
+    try {
+      const crashConfig = loadInitConfig();
+      const crashStateResult = await defaultReadState(
+        crashConfig.repoOwner,
+        crashConfig.repoName,
+        crashConfig.prNumber,
+        crashConfig.githubToken,
+      );
+      if (crashStateResult.found && crashStateResult.state.status === "fixing") {
+        core.warning(
+          "[pre-fix] Crash recovery: resetting fixing → stopped (state_corrupted)",
+        );
+        const recoveredState: ReviewState = {
+          ...crashStateResult.state,
+          status: "stopped",
+          stopReason: "state_corrupted",
+        };
+        await defaultUpdateStateComment(
+          crashConfig.repoOwner,
+          crashConfig.repoName,
+          crashStateResult.commentId,
+          recoveredState,
+          crashConfig.githubToken,
+          { expectedUpdatedAt: crashStateResult.commentUpdatedAt },
+        );
+      }
+    } catch (recoveryError) {
+      core.error(
+        `[pre-fix] Crash recovery failed: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
+      );
+    }
+  });
+}

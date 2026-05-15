@@ -1,0 +1,51 @@
+name: "Auto Review Loop — post-fix"
+description: "Scope check, CHECK_COMMAND, commit/push, state update, and re-review request after claude-code-action."
+
+inputs:
+  github-token:
+    description: "GitHub token with contents:write, pull-requests:write, issues:write"
+    required: true
+  codex-review-request-token:
+    description: "Optional token from a Codex-connected user for posting @codex review"
+    required: false
+    default: ""
+  pr-number:
+    description: "Pull request number"
+    required: true
+  pr-head-ref:
+    description: "PR head branch ref name"
+    required: true
+  pr-title:
+    description: "PR title (kept for parity with pre-fix; unused by post-fix today)"
+    required: false
+    default: ""
+  comment-id:
+    description: "Hidden state comment id (output of pre-fix)"
+    required: true
+  iteration:
+    description: "Iteration count (output of pre-fix)"
+    required: true
+  trigger-comment-id:
+    description: "Trigger comment id (output of pre-fix)"
+    required: false
+    default: "0"
+  check-command:
+    description: "CHECK_COMMAND (output of pre-fix; can also fall back to wrapping workflow)"
+    required: false
+    default: "npm run check"
+  action-outcome:
+    description: "GitHub Actions step.outcome of the preceding claude-code-action step (success | failure | cancelled | skipped)."
+    required: false
+    default: "success"
+  action-execution-file:
+    description: "Optional path to the claude-code-action execution output file. Used to distinguish max_turns_exceeded from generic action_failure."
+    required: false
+    default: ""
+  github-repository:
+    description: "Repository in owner/name format (auto-detected in GitHub Actions)"
+    required: false
+    default: ""
+
+runs:
+  using: "node20"
+  main: "../../dist/post-fix/index.cjs"

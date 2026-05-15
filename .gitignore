@@ -1,5 +1,8 @@
 node_modules/
-dist/
-# dist/init/ and dist/loop/ are committed (required by GitHub Actions JS actions)
+# Ignore everything under dist/, but re-include the subdirectories that ship as
+# GitHub Actions JS action bundles. Each subdirectory needs its own re-include
+# pattern (parent-directory excludes block child negations otherwise).
+dist/*
 !dist/init/
-!dist/loop/
+!dist/pre-fix/
+!dist/post-fix/

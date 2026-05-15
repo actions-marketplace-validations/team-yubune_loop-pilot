@@ -1,5 +1,15 @@
 name: "Auto Review Loop"
-description: "Run one Codex review → Claude fix iteration"
+description: "Run one Codex review → Claude-Code repair → re-review iteration via anthropics/claude-code-action@v1."
+
+# Composite action wiring the three-step Workflow B repair pipeline:
+#   1. pre-fix         — label gate, state guards, debounce, judge, prompt build
+#   2. claude-code-action — repo-level repair executor (anthropics/claude-code-action@v1)
+#   3. post-fix        — scope check, CHECK_COMMAND, commit/push, state update,
+#                        re-request Codex review
+#
+# pre-fix decides whether the iteration runs via `should_run`. When false the
+# claude-code-action and post-fix steps are skipped — pre-fix has already
+# finalized state (done / stopped) for this trigger.
 
 inputs:
   github-token:
@@ -10,7 +20,7 @@ inputs:
     required: false
     default: ""
   anthropic-api-key:
-    description: "Anthropic API key for Claude"
+    description: "Anthropic API key for claude-code-action"
     required: true
   pr-number:
     description: "Pull request number"
@@ -47,11 +57,11 @@ inputs:
     required: false
     default: "npm run check"
   max-files-per-iteration:
-    description: "Maximum files to fix per iteration"
+    description: "Compatibility input; not consumed by the claude-code-action loop."
     required: false
     default: "10"
   max-input-tokens-per-file:
-    description: "Maximum estimated input tokens per file (skip if exceeded)"
+    description: "Compatibility input; not consumed by the claude-code-action loop."
     required: false
     default: "30000"
   codex-bot-login:
@@ -79,14 +89,98 @@ inputs:
     required: false
     default: "false"
   auto-review-restart-roles:
-    description: "Comma-separated roles allowed to run /restart-review. Supports author, admin, maintain, write, triage, read."
+    description: "Comma-separated roles allowed to run /restart-review."
     required: false
     default: "author,write,maintain,admin"
+  claude-code-model:
+    description: "Claude Code model to pass to claude-code-action via --model. Defaults to claude-opus-4-7 per docs/operations/security.md."
+    required: false
+    default: "claude-opus-4-7"
+  claude-code-max-turns:
+    description: "Value forwarded to claude-code-action's --max-turns argument."
+    required: false
+    default: "40"
   github-repository:
     description: "Repository in owner/name format (auto-detected in GitHub Actions)"
     required: false
     default: ""
 
 runs:
-  using: "node20"
-  main: "../dist/loop/index.cjs"
+  using: "composite"
+  steps:
+    - name: Pre-fix (Phase 0–3 prep)
+      id: pre
+      uses: ./loop/pre-fix
+      with:
+        github-token: ${{ inputs.github-token }}
+        codex-review-request-token: ${{ inputs.codex-review-request-token }}
+        anthropic-api-key: ${{ inputs.anthropic-api-key }}
+        pr-number: ${{ inputs.pr-number }}
+        pr-head-ref: ${{ inputs.pr-head-ref }}
+        pr-title: ${{ inputs.pr-title }}
+        trigger-comment-id: ${{ inputs.trigger-comment-id }}
+        trigger-comment-body: ${{ inputs.trigger-comment-body }}
+        trigger-user-login: ${{ inputs.trigger-user-login }}
+        max-review-iterations: ${{ inputs.max-review-iterations }}
+        debounce-seconds: ${{ inputs.debounce-seconds }}
+        check-command: ${{ inputs.check-command }}
+        max-files-per-iteration: ${{ inputs.max-files-per-iteration }}
+        max-input-tokens-per-file: ${{ inputs.max-input-tokens-per-file }}
+        codex-bot-login: ${{ inputs.codex-bot-login }}
+        codex-review-marker: ${{ inputs.codex-review-marker }}
+        stabilize-interval-seconds: ${{ inputs.stabilize-interval-seconds }}
+        stabilize-count: ${{ inputs.stabilize-count }}
+        auto-review-label: ${{ inputs.auto-review-label }}
+        auto-review-full-auto: ${{ inputs.auto-review-full-auto }}
+        auto-review-restart-roles: ${{ inputs.auto-review-restart-roles }}
+        github-repository: ${{ inputs.github-repository }}
+
+    - name: Claude Code Action (repo-level repair)
+      id: claude
+      if: steps.pre.outputs.should_run == 'true'
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_api_key: ${{ inputs.anthropic-api-key }}
+        github_token: ${{ inputs.github-token }}
+        prompt: ${{ steps.pre.outputs.prompt }}
+        # Tools / model / turn budget are governed by docs/operations/security.md
+        # ("Claude Code Action 実行制御"). Bash is allow-listed to the exact
+        # commands required for verification — git commit / git push are
+        # intentionally excluded so post-fix retains exclusive commit authority.
+        #
+        # `--disallowedTools` explicitly blocks the MCP server tools that
+        # could otherwise commit / push / delete files directly and bypass
+        # the post-fix scope check + CHECK_COMMAND gate. The corresponding
+        # MCP servers are already gated off by claude-code-action's defaults
+        # (github_file_ops requires `use_commit_signing: true`; the full
+        # github MCP server requires `mcp__github__*` entries in allowedTools),
+        # but listing them here keeps the intent durable against future
+        # default changes upstream.
+        claude_args: >-
+          --model ${{ inputs.claude-code-model }}
+          --max-turns ${{ inputs.claude-code-max-turns }}
+          --allowedTools "Read,Glob,Grep,Edit,Write,TodoWrite,Bash(npm ci),Bash(npm run check),Bash(npm test),Bash(npm run build),Bash(git status),Bash(git diff),Bash(git log)"
+          --disallowedTools "WebFetch,WebSearch,Task,NotebookEdit,mcp__github_file_ops__commit_files,mcp__github_file_ops__delete_files,mcp__github__create_or_update_file,mcp__github__push_files,mcp__github__delete_file,mcp__github__create_branch,mcp__github__create_pull_request,mcp__github__update_pull_request,mcp__github__merge_pull_request,mcp__github__fork_repository"
+        # The Codex bot is the canonical Workflow B trigger
+        # (pull_request_review.submitted from chatgpt-codex-connector[bot]),
+        # so claude-code-action's bot-actor guard must allow it explicitly.
+        # `*` is intentionally avoided; only the configured Codex bot login
+        # is allowed through.
+        allowed_bots: ${{ inputs.codex-bot-login }}
+
+    - name: Post-fix (scope check + CHECK_COMMAND + commit + state)
+      if: always() && steps.pre.outputs.should_run == 'true'
+      uses: ./loop/post-fix
+      with:
+        github-token: ${{ inputs.github-token }}
+        codex-review-request-token: ${{ inputs.codex-review-request-token }}
+        pr-number: ${{ inputs.pr-number }}
+        pr-head-ref: ${{ steps.pre.outputs.pr_head_ref }}
+        pr-title: ${{ inputs.pr-title }}
+        comment-id: ${{ steps.pre.outputs.comment_id }}
+        iteration: ${{ steps.pre.outputs.iteration }}
+        trigger-comment-id: ${{ steps.pre.outputs.trigger_comment_id }}
+        check-command: ${{ steps.pre.outputs.check_command }}
+        action-outcome: ${{ steps.claude.outcome }}
+        action-execution-file: ${{ steps.claude.outputs.execution_file }}
+        github-repository: ${{ inputs.github-repository }}

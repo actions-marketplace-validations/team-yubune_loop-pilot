@@ -177,7 +177,10 @@ Read, Glob, Grep, Edit, Write, Bash(<allowlist>), TodoWrite
 - `Read` / `Glob` / `Grep`: 関連ファイル探索に必須
 - `Edit` / `Write`: 修正。`Write` はテスト fixture や新規 helper を作る必要があるケースで使う
 - `TodoWrite`: 副作用なし。多段 repair の計画追跡に有用
-- 禁止: `WebFetch`, `WebSearch`, `Task`, `mcp__*`, `NotebookEdit`
+- 禁止: `WebFetch`, `WebSearch`, `Task`, `NotebookEdit`
+- 禁止（commit / push bypass 対策）: `mcp__github_file_ops__commit_files`, `mcp__github_file_ops__delete_files`, `mcp__github__create_or_update_file`, `mcp__github__push_files`, `mcp__github__delete_file`, `mcp__github__create_branch`, `mcp__github__create_pull_request`, `mcp__github__update_pull_request`, `mcp__github__merge_pull_request`, `mcp__github__fork_repository`
+
+> **bypass 対策の意図:** claude-code-action は `--allowedTools` を **base tools への追加** として扱うため、上記のような GitHub state を直接変更する MCP tool が暗黙に許可されると post-fix の scope check / CHECK_COMMAND を bypass して commit / push できてしまう。実機の claude-code-action はデフォルトで `github_file_ops` server を `use_commit_signing: true` 設定時のみ、full `github` MCP server を allowedTools に `mcp__github__*` が含まれる時のみロードするため、本リポジトリの設定ではいずれも未ロード。ただし上流のデフォルト変更に対する defense-in-depth として明示的に `--disallowedTools` へ列挙しておく。base tools として残る `github_comment` / `github_inline_comment` はコメント投稿用で commit 不可なので許容する。
 
 ### 許可 Bash コマンド（allowlist）
 
@@ -232,9 +235,10 @@ permissions:
 
 ### `allowed_bots`
 
-- claude-code-action は workflow から直接呼び出す（bot コメント由来の trigger 経路は使わない）
-- `allowed_bots` は **空配列 `[]`** で固定
-- `'*'` は禁止
+- Workflow B は Codex bot (`chatgpt-codex-connector[bot]`) の `pull_request_review.submitted` をトリガーとするため、claude-code-action 内部の「non-human actor guard」は **Codex bot のみを明示的に allow** する必要がある
+- `allowed_bots` には `${{ inputs.codex-bot-login }}` を渡す。デフォルト値は `chatgpt-codex-connector[bot]`、Repository variable `CODEX_BOT_LOGIN` で上書き可能
+- `'*'` は依然として **禁止**（任意 bot trigger に拡げない）
+- 元方針の「`allowed_bots: []` で固定」は、claude-code-action を human-triggered workflow からのみ呼ぶ前提だった。実装では Codex review 受信から自動起動する設計のため、Codex bot のみ通す形で緩和した（TY-237 dogfood で判明）
 
 ### Fork PR / 外部 contributor
 

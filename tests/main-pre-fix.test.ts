@@ -1,0 +1,311 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Config } from "../src/config.js";
+import { runPreFix, type PreFixDeps, type PreFixOutputName } from "../src/main-pre-fix.js";
+import { createInitialState } from "../src/state-manager.js";
+import type { ReadStateResult } from "../src/state-manager.js";
+import type { RawReviewComment, ReviewState } from "../src/types.js";
+
+const baseConfig: Config = {
+  maxReviewIterations: 20,
+  debounceSeconds: 0,
+  checkCommand: "npm run check",
+  maxFilesPerIteration: 10,
+  maxInputTokensPerFile: 30000,
+  codexBotLogin: "chatgpt-codex-connector[bot]",
+  stabilizeIntervalSeconds: 1,
+  stabilizeCount: 1,
+  codexReviewMarker: "Codex Review",
+  codexReviewRequestToken: "codex-token",
+  anthropicApiKey: "anthropic-key",
+  githubToken: "github-token",
+  repoOwner: "team-yubune",
+  repoName: "test-auto-ai-review",
+  prNumber: 99,
+  triggerCommentId: 1234,
+  triggerCommentBody: "Codex Review summary",
+  triggerUserLogin: "chatgpt-codex-connector[bot]",
+  prHeadRef: "linear/TY-237",
+  prTitle: "TY-237: split main-loop",
+  autoReviewLabel: "auto-review-fix",
+  autoReviewFullAuto: false,
+  autoReviewRestartRoles: "author,write,maintain,admin",
+};
+
+function makeState(overrides: Partial<ReviewState> = {}): ReviewState {
+  return { ...createInitialState(), ...overrides };
+}
+
+interface OutputRecord {
+  outputs: Record<string, string>;
+}
+
+function makeDeps(
+  readResult: ReadStateResult,
+  reviewComments: RawReviewComment[] = [],
+): PreFixDeps & OutputRecord {
+  const outputs: Record<string, string> = {};
+  return {
+    readState: vi.fn().mockResolvedValue(readResult),
+    updateStateComment: vi.fn().mockResolvedValue({ updatedAt: "2026-05-14T12:00:00Z" }),
+    fetchReviewComments: vi.fn().mockResolvedValue(reviewComments),
+    stabilizeReviewComments: vi.fn().mockResolvedValue(reviewComments),
+    postCompletionComment: vi.fn().mockResolvedValue(1),
+    postStopComment: vi.fn().mockResolvedValue(2),
+    postInitIncompleteComment: vi.fn().mockResolvedValue(3),
+    fetchPrLabels: vi.fn().mockResolvedValue(["auto-review-fix"]),
+    handleRestartCommand: vi.fn().mockResolvedValue({ handled: false }),
+    setSecret: vi.fn(),
+    setOutput: (name: PreFixOutputName, value: string) => {
+      outputs[name] = value;
+    },
+    info: vi.fn(),
+    warning: vi.fn(),
+    error: vi.fn(),
+    sleep: vi.fn().mockResolvedValue(undefined),
+    now: () => new Date("2026-05-14T12:00:00Z"),
+    readHeadSha: () => "deadbeef",
+    checkoutBranch: vi.fn(),
+    outputs,
+  };
+}
+
+describe("runPreFix", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("emits should_run=false when the gate label is missing", async () => {
+    const deps = makeDeps({
+      found: true,
+      corrupted: false,
+      commentId: 100,
+      commentUpdatedAt: "2026-05-14T11:00:00Z",
+      state: makeState({ status: "waiting_codex" }),
+    });
+    deps.fetchPrLabels = vi.fn().mockResolvedValue([]);
+
+    await runPreFix(baseConfig, deps);
+
+    expect(deps.outputs.should_run).toBe("false");
+    expect(deps.updateStateComment).not.toHaveBeenCalled();
+    expect(deps.postStopComment).not.toHaveBeenCalled();
+  });
+
+  it("returns silently when no hidden state exists", async () => {
+    const deps = makeDeps({ found: false, corrupted: false, commentId: null });
+
+    await runPreFix(baseConfig, deps);
+
+    expect(deps.outputs.should_run).toBe("false");
+    expect(deps.updateStateComment).not.toHaveBeenCalled();
+    expect(deps.postStopComment).not.toHaveBeenCalled();
+  });
+
+  it.each(["stopped", "done"] as const)(
+    "skips when status is %s",
+    async (status) => {
+      const deps = makeDeps({
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({ status }),
+      });
+
+      await runPreFix(baseConfig, deps);
+
+      expect(deps.outputs.should_run).toBe("false");
+      expect(deps.updateStateComment).not.toHaveBeenCalled();
+    },
+  );
+
+  it("recovers stale 'fixing' state with action_timeout-style detail", async () => {
+    const staleStartedAt = new Date("2026-05-14T10:00:00Z").toISOString();
+    const deps = makeDeps({
+      found: true,
+      corrupted: false,
+      commentId: 100,
+      commentUpdatedAt: "2026-05-14T11:00:00Z",
+      state: makeState({
+        status: "fixing",
+        lastCodexReviewReceivedAt: staleStartedAt,
+      }),
+    });
+
+    await runPreFix(baseConfig, deps);
+
+    expect(deps.outputs.should_run).toBe("false");
+    expect(deps.updateStateComment).toHaveBeenCalledWith(
+      "team-yubune",
+      "test-auto-ai-review",
+      100,
+      expect.objectContaining({ status: "stopped", stopReason: "state_corrupted" }),
+      "github-token",
+      expect.any(Object),
+    );
+    expect(deps.postStopComment).toHaveBeenCalled();
+  });
+
+  it("does not double-process the same trigger comment", async () => {
+    const deps = makeDeps({
+      found: true,
+      corrupted: false,
+      commentId: 100,
+      commentUpdatedAt: "2026-05-14T11:00:00Z",
+      state: makeState({
+        status: "waiting_codex",
+        lastProcessedReviewId: baseConfig.triggerCommentId,
+      }),
+    });
+
+    await runPreFix(baseConfig, deps);
+
+    expect(deps.outputs.should_run).toBe("false");
+    expect(deps.fetchReviewComments).not.toHaveBeenCalled();
+  });
+
+  it("marks done when no findings are returned", async () => {
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({ status: "waiting_codex" }),
+      },
+      [], // no comments → no findings
+    );
+
+    await runPreFix(baseConfig, deps);
+
+    expect(deps.outputs.should_run).toBe("false");
+    expect(deps.updateStateComment).toHaveBeenCalledWith(
+      "team-yubune",
+      "test-auto-ai-review",
+      100,
+      expect.objectContaining({ status: "done", stopReason: "no_findings" }),
+      "github-token",
+      expect.any(Object),
+    );
+    expect(deps.postCompletionComment).toHaveBeenCalled();
+  });
+
+  it("stops when iteration count is at the configured maximum", async () => {
+    const findings: RawReviewComment[] = [
+      {
+        id: 200,
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body: "P1 Race condition in cache eviction\n\nDescription.\n\nUseful?",
+        path: "src/cache.ts",
+        line: 12,
+        createdAt: "2026-05-14T11:30:00Z",
+      },
+    ];
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({ status: "waiting_codex", iterationCount: 20 }),
+      },
+      findings,
+    );
+
+    await runPreFix(baseConfig, deps);
+
+    expect(deps.outputs.should_run).toBe("false");
+    expect(deps.updateStateComment).toHaveBeenCalledWith(
+      "team-yubune",
+      "test-auto-ai-review",
+      100,
+      expect.objectContaining({ status: "stopped", stopReason: "max_iterations" }),
+      "github-token",
+      expect.any(Object),
+    );
+    expect(deps.postStopComment).toHaveBeenCalled();
+  });
+
+  it("propagates checkoutBranch failure so claude-code-action does not run on the wrong ref", async () => {
+    const findings: RawReviewComment[] = [
+      {
+        id: 400,
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body: "P1 Race in middleware\n\nSomething.",
+        path: "src/middleware.ts",
+        line: 10,
+        createdAt: "2026-05-14T11:30:00Z",
+      },
+    ];
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({ status: "waiting_codex" }),
+      },
+      findings,
+    );
+    deps.checkoutBranch = vi.fn().mockImplementation(() => {
+      throw new Error("error: pathspec 'linear/TY-237' did not match any file(s) known to git");
+    });
+
+    await expect(runPreFix(baseConfig, deps)).rejects.toThrow(/did not match/);
+
+    // Pre-fix should never advance to emitting the run signal once the
+    // working tree cannot be repositioned to the PR head.
+    expect(deps.outputs.should_run).toBe("false");
+  });
+
+  it("transitions to fixing and emits the prompt + outputs on a clean run", async () => {
+    const findings: RawReviewComment[] = [
+      {
+        id: 300,
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body: "P0 Token bypass in middleware\n\nThe middleware skips the auth check on prefetch.",
+        path: "src/auth.ts",
+        line: 42,
+        createdAt: "2026-05-14T11:30:00Z",
+      },
+    ];
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({
+          status: "waiting_codex",
+          iterationCount: 1,
+          previousCheckFailure: "previous tail",
+        }),
+      },
+      findings,
+    );
+
+    await runPreFix(baseConfig, deps);
+
+    expect(deps.outputs.should_run).toBe("true");
+    expect(deps.outputs.iteration).toBe("2");
+    expect(deps.outputs.check_command).toBe("npm run check");
+    expect(deps.outputs.pr_head_ref).toBe("linear/TY-237");
+    expect(deps.outputs.head_sha).toBe("deadbeef");
+    expect(deps.outputs.comment_id).toBe("100");
+    expect(deps.outputs.findings_count).toBe("1");
+    expect(deps.outputs.prompt).toContain("Codex Findings (1)");
+    expect(deps.outputs.prompt).toContain("Token bypass in middleware");
+    // previous tail surfaced in the prompt
+    expect(deps.outputs.prompt).toContain("previous tail");
+
+    expect(deps.updateStateComment).toHaveBeenCalledWith(
+      "team-yubune",
+      "test-auto-ai-review",
+      100,
+      expect.objectContaining({ status: "fixing", iterationCount: 2 }),
+      "github-token",
+      expect.any(Object),
+    );
+    expect(deps.checkoutBranch).toHaveBeenCalledWith("linear/TY-237");
+  });
+});

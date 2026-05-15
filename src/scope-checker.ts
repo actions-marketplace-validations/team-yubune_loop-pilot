@@ -198,10 +198,14 @@ export function checkScope(
  * git emits `-\t-\t<path>`, which we surface as `added=-1, deleted=-1`
  * so the caller can refuse them via `checkScope`.
  *
- * Lines with the rename notation `{old => new}` are not produced by
- * `--numstat` without `--no-renames`; if encountered they are passed
- * through verbatim so the path looks suspicious and gets caught by
- * `isUnsafePath` or the policy check.
+ * **Rename notation guard:** without `--no-renames`, git can emit
+ * compact rename paths such as `src/{old.ts => new.ts}` or
+ * `{src/old.ts => dst/new.ts}` that are not real filesystem paths.
+ * Passing such a string straight into `git add -- <path>` or
+ * `readFileSync(path)` fails. Callers should prefer `--no-renames`,
+ * but as a defense-in-depth measure this parser silently drops any
+ * line whose path contains the ` => ` token so the downstream pipeline
+ * cannot accidentally stage or read the synthetic rename name.
  */
 export function parseGitNumstat(output: string): ChangedFile[] {
   const lines = output.split("\n");
@@ -213,6 +217,7 @@ export function parseGitNumstat(output: string): ChangedFile[] {
     const [a, d, ...rest] = parts;
     const path = rest.join("\t");
     if (path.length === 0) continue;
+    if (path.includes(" => ")) continue;
     const added = a === "-" ? -1 : Number.parseInt(a, 10);
     const deleted = d === "-" ? -1 : Number.parseInt(d, 10);
     if (

@@ -1,5 +1,11 @@
 # Claude 修正エンジン仕様
 
+> **⚠ Superseded by [Claude Code Action repair flow](claude-code-repair-request.md) (TY-234 / TY-236).**
+>
+> 本ドキュメントは Anthropic SDK を直接呼び出して `edit_file` ツール出力を適用していた旧 `src/claude-fix-engine.ts` 方式の仕様。`anthropics/claude-code-action@v1` への移行 (TY-236 PR2 / TY-237) に伴い `src/claude-fix-engine.ts` と `src/sequential-fix-runner.ts` は削除済み。新しい修正フローは [Claude Code Action 実行制御](../operations/security.md#claude-code-action-実行制御) と [`claude-code-repair-request.md`](claude-code-repair-request.md) を参照。
+>
+> 本ファイルはコスト試算・edit 適用ロジックの履歴として残す。新規実装の根拠資料としては使わない。
+
 ## モデル
 
 - **Claude Opus** を使用。バグ修正には深い思考が必要なため、最も推論能力の高いモデルを選択する
