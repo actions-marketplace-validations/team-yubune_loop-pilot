@@ -29,6 +29,9 @@ const baseConfig: Config = {
   autoReviewLabel: "auto-review-fix",
   autoReviewFullAuto: false,
   autoReviewRestartRoles: "author,write,maintain,admin",
+  claudeCodeModelOverride: "",
+  claudeCodeModelBase: "claude-sonnet-4-6",
+  claudeCodeModelEscalated: "claude-opus-4-7",
 };
 
 function makeState(overrides: Partial<ReviewState> = {}): ReviewState {
@@ -300,6 +303,8 @@ describe("runPreFix", () => {
     // Default CHECK_COMMAND is already in the baseline, so no extra entry.
     expect(deps.outputs.allowed_bash_tools).toContain("Bash(npm run check)");
     expect(deps.outputs.allowed_bash_tools).toContain("Bash(git diff)");
+    // P0 finding + previousCheckFailure both fire → escalated to Opus.
+    expect(deps.outputs.model).toBe("claude-opus-4-7");
 
     expect(deps.updateStateComment).toHaveBeenCalledWith(
       "team-yubune",
@@ -342,6 +347,68 @@ describe("runPreFix", () => {
     expect(deps.outputs.should_run).toBe("true");
     expect(deps.outputs.allowed_bash_tools).toContain("Bash(pnpm run check)");
     expect(deps.warning).not.toHaveBeenCalled();
+  });
+
+  it("uses the base model when no escalation signal fires", async () => {
+    const findings: RawReviewComment[] = [
+      {
+        id: 320,
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body: "P2 Minor nit\n\nA comment is unclear.",
+        path: "src/foo.ts",
+        line: 12,
+        createdAt: "2026-05-14T11:30:00Z",
+      },
+    ];
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({ status: "waiting_codex", previousCheckFailure: null }),
+      },
+      findings,
+    );
+
+    await runPreFix(baseConfig, deps);
+
+    expect(deps.outputs.should_run).toBe("true");
+    expect(deps.outputs.model).toBe("claude-sonnet-4-6");
+  });
+
+  it("honors claudeCodeModelOverride even with escalation signals", async () => {
+    const findings: RawReviewComment[] = [
+      {
+        id: 321,
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body: "P0 Critical\n\nReally bad.",
+        path: "src/foo.ts",
+        line: 12,
+        createdAt: "2026-05-14T11:30:00Z",
+      },
+    ];
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({
+          status: "waiting_codex",
+          previousCheckFailure: "boom",
+        }),
+      },
+      findings,
+    );
+
+    await runPreFix(
+      { ...baseConfig, claudeCodeModelOverride: "claude-haiku-4-5-20251001" },
+      deps,
+    );
+
+    expect(deps.outputs.should_run).toBe("true");
+    expect(deps.outputs.model).toBe("claude-haiku-4-5-20251001");
   });
 
   it("warns and falls back to baseline when CHECK_COMMAND is unsafe", async () => {

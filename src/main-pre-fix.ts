@@ -40,6 +40,7 @@ import {
   deriveAllowedBashTools,
   serializeAllowedBashTools,
 } from "./check-command-allowlist.js";
+import { selectModel } from "./model-selector.js";
 import type { Finding, PrContext, ReviewState } from "./types.js";
 
 /** Pause execution for the given number of milliseconds. */
@@ -65,7 +66,8 @@ export type PreFixOutputName =
   | "comment_id"
   | "trigger_comment_id"
   | "findings_count"
-  | "allowed_bash_tools";
+  | "allowed_bash_tools"
+  | "model";
 
 export interface PreFixDeps {
   readState: typeof defaultReadState;
@@ -563,6 +565,20 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
     );
   }
 
+  const selection = selectModel({
+    override: config.claudeCodeModelOverride,
+    baseModel: config.claudeCodeModelBase,
+    escalatedModel: config.claudeCodeModelEscalated,
+    findings,
+    previousCheckFailure: state.previousCheckFailure ?? null,
+  });
+  deps.info(
+    `[pre-fix] Model tier=${selection.tier} model=${selection.model}` +
+      (selection.escalationReasons.length > 0
+        ? ` reasons=${selection.escalationReasons.join(",")}`
+        : ""),
+  );
+
   deps.setOutput("should_run", "true");
   deps.setOutput("prompt", prompt);
   deps.setOutput("iteration", String(fixingState.iterationCount));
@@ -576,6 +592,7 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
     "allowed_bash_tools",
     serializeAllowedBashTools(allowedBashTools.tools),
   );
+  deps.setOutput("model", selection.model);
 
   deps.info(
     `[pre-fix] Phase 3 prep complete. iteration=${fixingState.iterationCount}, findings=${findings.length}.`,

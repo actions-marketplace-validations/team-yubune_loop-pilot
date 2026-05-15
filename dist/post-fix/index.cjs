@@ -19105,6 +19105,8 @@ function info(message) {
 }
 
 // dist/config.js
+var DEFAULT_CLAUDE_CODE_MODEL_BASE = "claude-sonnet-4-6";
+var DEFAULT_CLAUDE_CODE_MODEL_ESCALATED = "claude-opus-4-7";
 function loadInitConfig() {
   return {
     ...loadBaseConfig(),
@@ -19142,7 +19144,10 @@ function loadBaseConfig() {
     prTitle: input("pr-title", "PR_TITLE", ""),
     autoReviewLabel: input("auto-review-label", "AUTO_REVIEW_LABEL", ""),
     autoReviewFullAuto: boolInput("auto-review-full-auto", "AUTO_REVIEW_FULL_AUTO", false),
-    autoReviewRestartRoles: input("auto-review-restart-roles", "AUTO_REVIEW_RESTART_ROLES", "author,write,maintain,admin")
+    autoReviewRestartRoles: input("auto-review-restart-roles", "AUTO_REVIEW_RESTART_ROLES", "author,write,maintain,admin"),
+    claudeCodeModelOverride: input("claude-code-model", "CLAUDE_CODE_MODEL", ""),
+    claudeCodeModelBase: input("claude-code-model-base", "CLAUDE_CODE_MODEL_BASE", DEFAULT_CLAUDE_CODE_MODEL_BASE),
+    claudeCodeModelEscalated: input("claude-code-model-escalated", "CLAUDE_CODE_MODEL_ESCALATED", DEFAULT_CLAUDE_CODE_MODEL_ESCALATED)
   };
 }
 function input(inputName, envName, defaultValue) {

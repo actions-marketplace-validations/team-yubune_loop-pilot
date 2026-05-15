@@ -86,6 +86,18 @@ inputs:
     description: "Repository in owner/name format (auto-detected in GitHub Actions)"
     required: false
     default: ""
+  claude-code-model:
+    description: "Legacy single-model override. Empty enables the base/escalated tiering."
+    required: false
+    default: ""
+  claude-code-model-base:
+    description: "Base tier model used when no escalation signal fires."
+    required: false
+    default: "claude-sonnet-4-6"
+  claude-code-model-escalated:
+    description: "Escalated tier model used on P0 finding or after a CHECK_COMMAND failure."
+    required: false
+    default: "claude-opus-4-7"
 
 outputs:
   should_run:
@@ -108,6 +120,8 @@ outputs:
     description: "Number of P0/P1/P2 findings forwarded to claude-code-action."
   allowed_bash_tools:
     description: "Comma-separated Bash(...) entries derived from CHECK_COMMAND for claude-code-action --allowedTools."
+  model:
+    description: "Claude model selected by the tiering policy. Forwarded to claude-code-action's --model."
 
 runs:
   using: "node20"

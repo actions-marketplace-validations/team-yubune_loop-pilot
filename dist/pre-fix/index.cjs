@@ -19140,6 +19140,8 @@ function info(message) {
 }
 
 // dist/config.js
+var DEFAULT_CLAUDE_CODE_MODEL_BASE = "claude-sonnet-4-6";
+var DEFAULT_CLAUDE_CODE_MODEL_ESCALATED = "claude-opus-4-7";
 var DEFAULT_AUTO_REVIEW_LABEL = "auto-review-fix";
 function loadConfig() {
   return {
@@ -19184,7 +19186,10 @@ function loadBaseConfig() {
     prTitle: input("pr-title", "PR_TITLE", ""),
     autoReviewLabel: input("auto-review-label", "AUTO_REVIEW_LABEL", ""),
     autoReviewFullAuto: boolInput("auto-review-full-auto", "AUTO_REVIEW_FULL_AUTO", false),
-    autoReviewRestartRoles: input("auto-review-restart-roles", "AUTO_REVIEW_RESTART_ROLES", "author,write,maintain,admin")
+    autoReviewRestartRoles: input("auto-review-restart-roles", "AUTO_REVIEW_RESTART_ROLES", "author,write,maintain,admin"),
+    claudeCodeModelOverride: input("claude-code-model", "CLAUDE_CODE_MODEL", ""),
+    claudeCodeModelBase: input("claude-code-model-base", "CLAUDE_CODE_MODEL_BASE", DEFAULT_CLAUDE_CODE_MODEL_BASE),
+    claudeCodeModelEscalated: input("claude-code-model-escalated", "CLAUDE_CODE_MODEL_ESCALATED", DEFAULT_CLAUDE_CODE_MODEL_ESCALATED)
   };
 }
 function input(inputName, envName, defaultValue) {
@@ -20147,6 +20152,36 @@ function serializeAllowedBashTools(tools) {
   return tools.join(",");
 }
 
+// dist/model-selector.js
+function selectModel(input2) {
+  if (input2.override !== "") {
+    return {
+      model: input2.override,
+      tier: "override",
+      escalationReasons: []
+    };
+  }
+  const reasons = [];
+  if (input2.findings.some((f) => f.severity === "P0")) {
+    reasons.push("p0_finding");
+  }
+  if (input2.previousCheckFailure !== null && input2.previousCheckFailure !== "") {
+    reasons.push("previous_check_failure");
+  }
+  if (reasons.length > 0) {
+    return {
+      model: input2.escalatedModel,
+      tier: "escalated",
+      escalationReasons: reasons
+    };
+  }
+  return {
+    model: input2.baseModel,
+    tier: "base",
+    escalationReasons: []
+  };
+}
+
 // dist/main-pre-fix.js
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -20394,6 +20429,14 @@ async function runPreFix(config, deps = defaultDeps) {
   if (allowedBashTools.rejection !== null) {
     deps.warning(`[pre-fix] CHECK_COMMAND '${config.checkCommand}' not added to Bash allowlist: ${allowedBashTools.rejection}. claude-code-action may fail to verify; set CHECK_COMMAND to a whitelisted binary (see docs/operations/security.md).`);
   }
+  const selection = selectModel({
+    override: config.claudeCodeModelOverride,
+    baseModel: config.claudeCodeModelBase,
+    escalatedModel: config.claudeCodeModelEscalated,
+    findings,
+    previousCheckFailure: state.previousCheckFailure ?? null
+  });
+  deps.info(`[pre-fix] Model tier=${selection.tier} model=${selection.model}` + (selection.escalationReasons.length > 0 ? ` reasons=${selection.escalationReasons.join(",")}` : ""));
   deps.setOutput("should_run", "true");
   deps.setOutput("prompt", prompt);
   deps.setOutput("iteration", String(fixingState.iterationCount));
@@ -20404,6 +20447,7 @@ async function runPreFix(config, deps = defaultDeps) {
   deps.setOutput("trigger_comment_id", String(triggerCommentId));
   deps.setOutput("findings_count", String(findings.length));
   deps.setOutput("allowed_bash_tools", serializeAllowedBashTools(allowedBashTools.tools));
+  deps.setOutput("model", selection.model);
   deps.info(`[pre-fix] Phase 3 prep complete. iteration=${fixingState.iterationCount}, findings=${findings.length}.`);
 }
 async function run() {

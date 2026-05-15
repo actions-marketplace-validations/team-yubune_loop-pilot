@@ -28,7 +28,19 @@ export interface Config {
   autoReviewLabel: string;
   autoReviewFullAuto: boolean;
   autoReviewRestartRoles: string;
+  // claude-code-action model selection (TY-241).
+  // - claudeCodeModelOverride: legacy single-model var. When set (non-empty),
+  //   tiering is disabled and this exact model is used for every iteration.
+  // - claudeCodeModelBase: tier-1 model used when no escalation signal fires.
+  // - claudeCodeModelEscalated: tier-2 model used on P0 finding or after a
+  //   previous-iteration CHECK_COMMAND failure.
+  claudeCodeModelOverride: string;
+  claudeCodeModelBase: string;
+  claudeCodeModelEscalated: string;
 }
+
+const DEFAULT_CLAUDE_CODE_MODEL_BASE = "claude-sonnet-4-6";
+const DEFAULT_CLAUDE_CODE_MODEL_ESCALATED = "claude-opus-4-7";
 
 /**
  * Fallback label name used when the user has not configured AUTO_REVIEW_LABEL.
@@ -94,6 +106,21 @@ function loadBaseConfig(): Omit<Config, "anthropicApiKey"> {
       "auto-review-restart-roles",
       "AUTO_REVIEW_RESTART_ROLES",
       "author,write,maintain,admin",
+    ),
+    claudeCodeModelOverride: input(
+      "claude-code-model",
+      "CLAUDE_CODE_MODEL",
+      "",
+    ),
+    claudeCodeModelBase: input(
+      "claude-code-model-base",
+      "CLAUDE_CODE_MODEL_BASE",
+      DEFAULT_CLAUDE_CODE_MODEL_BASE,
+    ),
+    claudeCodeModelEscalated: input(
+      "claude-code-model-escalated",
+      "CLAUDE_CODE_MODEL_ESCALATED",
+      DEFAULT_CLAUDE_CODE_MODEL_ESCALATED,
     ),
   };
 }

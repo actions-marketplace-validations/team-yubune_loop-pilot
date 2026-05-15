@@ -93,7 +93,15 @@ inputs:
     required: false
     default: "author,write,maintain,admin"
   claude-code-model:
-    description: "Claude Code model to pass to claude-code-action via --model. Defaults to claude-opus-4-7 per docs/operations/security.md."
+    description: "Hard-override model. When non-empty, disables tiering and uses this exact model for every iteration (back-compat with the pre-TY-241 single-model setup). Empty enables base/escalated tiering."
+    required: false
+    default: ""
+  claude-code-model-base:
+    description: "Base tier model used when no escalation signal fires. See docs/operations/security.md (model selection)."
+    required: false
+    default: "claude-sonnet-4-6"
+  claude-code-model-escalated:
+    description: "Escalated tier model used when a P0 finding is present or the previous iteration's CHECK_COMMAND failed."
     required: false
     default: "claude-opus-4-7"
   claude-code-max-turns:
@@ -134,6 +142,9 @@ runs:
         auto-review-full-auto: ${{ inputs.auto-review-full-auto }}
         auto-review-restart-roles: ${{ inputs.auto-review-restart-roles }}
         github-repository: ${{ inputs.github-repository }}
+        claude-code-model: ${{ inputs.claude-code-model }}
+        claude-code-model-base: ${{ inputs.claude-code-model-base }}
+        claude-code-model-escalated: ${{ inputs.claude-code-model-escalated }}
 
     - name: Claude Code Action (repo-level repair)
       id: claude
@@ -166,7 +177,7 @@ runs:
         # but listing them here keeps the intent durable against future
         # default changes upstream.
         claude_args: >-
-          --model ${{ inputs.claude-code-model }}
+          --model ${{ steps.pre.outputs.model }}
           --max-turns ${{ inputs.claude-code-max-turns }}
           --allowedTools "Read,Glob,Grep,Edit,Write,TodoWrite,${{ steps.pre.outputs.allowed_bash_tools }}"
           --disallowedTools "WebFetch,WebSearch,Task,NotebookEdit,mcp__github_file_ops__commit_files,mcp__github_file_ops__delete_files,mcp__github__create_or_update_file,mcp__github__push_files,mcp__github__delete_file,mcp__github__create_branch,mcp__github__create_pull_request,mcp__github__update_pull_request,mcp__github__merge_pull_request,mcp__github__fork_repository"
