@@ -24,7 +24,7 @@ const STOP_REASON_LABELS: Record<StopReason, string> = {
 /**
  * Posts a comment to a GitHub PR issue and returns the new comment's numeric ID.
  */
-async function postComment(
+export async function postComment(
   owner: string,
   name: string,
   pr: number,

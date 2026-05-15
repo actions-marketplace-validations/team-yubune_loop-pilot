@@ -19959,19 +19959,6 @@ async function getCollaboratorPermission(owner, repo, user, token) {
     return "none";
   }
 }
-async function postComment2(owner, repo, prNumber, body, token) {
-  const { stdout } = await execFileAsync6("gh", [
-    "api",
-    `repos/${owner}/${repo}/issues/${prNumber}/comments`,
-    "-X",
-    "POST",
-    "-f",
-    `body=${body}`,
-    "--jq",
-    ".id"
-  ], { env: buildGhEnv(token) });
-  return Number.parseInt(stdout.trim(), 10);
-}
 async function addEyesReaction(owner, repo, commentId, token) {
   await execFileAsync6("gh", [
     "api",
@@ -19988,7 +19975,7 @@ var defaultRestartCommandDeps = {
   getPrAuthor,
   getCollaboratorPermission,
   updateStateComment,
-  postComment: postComment2,
+  postComment,
   addEyesReaction,
   postCodexReviewRequest
 };

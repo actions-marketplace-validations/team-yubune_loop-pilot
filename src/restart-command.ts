@@ -1,7 +1,10 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { buildGhEnv } from "./gh-env.js";
-import { postCodexReviewRequest as defaultPostCodexReviewRequest } from "./comment-poster.js";
+import {
+  postCodexReviewRequest as defaultPostCodexReviewRequest,
+  postComment as defaultPostComment,
+} from "./comment-poster.js";
 import { updateStateComment as defaultUpdateStateComment } from "./state-manager.js";
 import type { ReadStateResult } from "./state-manager.js";
 import type { ReviewState, StopReason } from "./types.js";
@@ -406,30 +409,6 @@ async function getCollaboratorPermission(
   }
 }
 
-async function postComment(
-  owner: string,
-  repo: string,
-  prNumber: number,
-  body: string,
-  token: string,
-): Promise<number> {
-  const { stdout } = await execFileAsync(
-    "gh",
-    [
-      "api",
-      `repos/${owner}/${repo}/issues/${prNumber}/comments`,
-      "-X",
-      "POST",
-      "-f",
-      `body=${body}`,
-      "--jq",
-      ".id",
-    ],
-    { env: buildGhEnv(token) },
-  );
-  return Number.parseInt(stdout.trim(), 10);
-}
-
 async function addEyesReaction(
   owner: string,
   repo: string,
@@ -456,7 +435,7 @@ const defaultRestartCommandDeps: RestartCommandDeps = {
   getPrAuthor,
   getCollaboratorPermission,
   updateStateComment: defaultUpdateStateComment,
-  postComment,
+  postComment: defaultPostComment,
   addEyesReaction,
   postCodexReviewRequest: defaultPostCodexReviewRequest,
 };
