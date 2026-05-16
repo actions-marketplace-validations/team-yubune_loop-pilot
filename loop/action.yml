@@ -24,8 +24,13 @@ inputs:
     required: false
     default: ""
   anthropic-api-key:
-    description: "Anthropic API key for claude-code-action"
-    required: true
+    description: "Anthropic API key for claude-code-action. Set this OR claude-code-oauth-token (exactly one). See docs/operations/security.md (認証)."
+    required: false
+    default: ""
+  claude-code-oauth-token:
+    description: "Claude Code subscription OAuth token (Pro / Max, generated via `claude setup-token`). Set this OR anthropic-api-key (exactly one). See docs/operations/security.md (認証)."
+    required: false
+    default: ""
   pr-number:
     description: "Pull request number"
     required: true
@@ -123,6 +128,7 @@ runs:
         github-token: ${{ inputs.github-token }}
         codex-review-request-token: ${{ inputs.codex-review-request-token }}
         anthropic-api-key: ${{ inputs.anthropic-api-key }}
+        claude-code-oauth-token: ${{ inputs.claude-code-oauth-token }}
         pr-number: ${{ inputs.pr-number }}
         pr-head-ref: ${{ inputs.pr-head-ref }}
         pr-title: ${{ inputs.pr-title }}
@@ -150,7 +156,12 @@ runs:
       if: steps.pre.outputs.should_run == 'true'
       uses: anthropics/claude-code-action@v1
       with:
+        # TY-260: pass both credentials through; pre-fix has already enforced
+        # that exactly one is non-empty. The upstream SDK ignores the empty
+        # one, so this stays a simple straight pass-through with no priority
+        # logic on our side.
         anthropic_api_key: ${{ inputs.anthropic-api-key }}
+        claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
         github_token: ${{ inputs.github-token }}
         prompt: ${{ steps.pre.outputs.prompt }}
         # Tools / model / turn budget are governed by docs/operations/security.md

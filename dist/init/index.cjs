@@ -19150,7 +19150,8 @@ var DEFAULT_CLAUDE_CODE_MODEL_ESCALATED = "claude-opus-4-7";
 function loadInitConfig() {
   return {
     ...loadBaseConfig(),
-    anthropicApiKey: ""
+    anthropicApiKey: "",
+    claudeCodeOauthToken: ""
   };
 }
 function loadBaseConfig() {

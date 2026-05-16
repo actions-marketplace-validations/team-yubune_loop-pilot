@@ -7,7 +7,8 @@
 #       github-token: ${{ secrets.GITHUB_TOKEN }}
 #       codex-review-request-token: ${{ secrets.CODEX_REVIEW_REQUEST_TOKEN }}
 #       auto-review-push-token: ${{ secrets.AUTO_REVIEW_PUSH_TOKEN }}
-#       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+#       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}        # or
+#       claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #       pr-number: ${{ github.event.issue.number || github.event.pull_request.number }}
 #       pr-head-ref: ${{ steps.pr.outputs.head_ref }}
 #       pr-title: ${{ steps.pr.outputs.title }}
@@ -151,7 +152,12 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           codex-review-request-token: ${{ secrets.CODEX_REVIEW_REQUEST_TOKEN }}
           auto-review-push-token: ${{ secrets.AUTO_REVIEW_PUSH_TOKEN }}
+          # TY-260: pass both auth secrets through. Pre-fix fails fast unless
+          # exactly one is non-empty, so the deploying repo can pick API key
+          # billing or a Pro / Max subscription OAuth token by setting only
+          # the corresponding `secrets.*`.
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           pr-number: ${{ github.event.issue.number || github.event.pull_request.number }}
           pr-head-ref: ${{ steps.pr.outputs.head_ref }}
           pr-title: ${{ steps.pr.outputs.title }}

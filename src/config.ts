@@ -12,7 +12,15 @@ export interface Config {
   codexReviewMarker: string;
   codexReviewRequestToken: string;
   autoReviewPushToken: string;
+  // Claude authentication (TY-260). Exactly one is set after input
+  // validation: `anthropicApiKey` for direct Anthropic API billing, or
+  // `claudeCodeOauthToken` for a Pro / Max subscription via OAuth. Both
+  // values are forwarded to `anthropics/claude-code-action@v1` (the upstream
+  // SDK ignores the empty one). Setting neither or both at the same time is
+  // rejected at startup so the caller can never be ambiguous about which
+  // credential the loop is billing against.
   anthropicApiKey: string;
+  claudeCodeOauthToken: string;
   githubToken: string;
   repoOwner: string;
   repoName: string;
@@ -61,20 +69,45 @@ const DEFAULT_CLAUDE_CODE_MODEL_ESCALATED = "claude-opus-4-7";
 export const DEFAULT_AUTO_REVIEW_LABEL = "auto-review-fix";
 
 export function loadConfig(): Config {
+  // TY-260: accept either Anthropic API key OR Claude Code OAuth token, but
+  // never both. Fail-fast at startup so cost mistakes ("subscribed to Claude
+  // Code but forgot to clear ANTHROPIC_API_KEY → still billed per token")
+  // surface in the workflow log instead of running silently against the
+  // unintended credential.
+  const anthropicApiKey = input("anthropic-api-key", "ANTHROPIC_API_KEY", "");
+  const claudeCodeOauthToken = input(
+    "claude-code-oauth-token",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "",
+  );
+  if (anthropicApiKey === "" && claudeCodeOauthToken === "") {
+    throw new Error(
+      "Set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN (at least one is required).",
+    );
+  }
+  if (anthropicApiKey !== "" && claudeCodeOauthToken !== "") {
+    throw new Error(
+      "Set exactly one of ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN, not both. Remove one to disambiguate which credential is billed.",
+    );
+  }
   return {
     ...loadBaseConfig(),
-    anthropicApiKey: requireInput("anthropic-api-key", "ANTHROPIC_API_KEY"),
+    anthropicApiKey,
+    claudeCodeOauthToken,
   };
 }
 
 export function loadInitConfig(): Config {
+  // Init / post-fix do not call Claude directly, so neither credential is
+  // required here; the gate is enforced in `loadConfig` (pre-fix).
   return {
     ...loadBaseConfig(),
     anthropicApiKey: "",
+    claudeCodeOauthToken: "",
   };
 }
 
-function loadBaseConfig(): Omit<Config, "anthropicApiKey"> {
+function loadBaseConfig(): Omit<Config, "anthropicApiKey" | "claudeCodeOauthToken"> {
   const repoFullName = requireInput("github-repository", "GITHUB_REPOSITORY");
   const [repoOwner, repoName] = repoFullName.split("/");
   const validRepoSegment = /^[a-zA-Z0-9._-]+$/;

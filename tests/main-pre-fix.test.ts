@@ -18,6 +18,7 @@ const baseConfig: Config = {
   codexReviewRequestToken: "codex-token",
   autoReviewPushToken: "github-token",
   anthropicApiKey: "anthropic-key",
+  claudeCodeOauthToken: "",
   githubToken: "github-token",
   repoOwner: "team-yubune",
   repoName: "test-auto-ai-review",
@@ -564,6 +565,43 @@ describe("runPreFix", () => {
       expect.objectContaining({ status: "stopped", stopReason: "loop_detected" }),
       "github-token",
       expect.any(Object),
+    );
+  });
+
+  it("registers the OAuth token as a secret and warns about quota usage when using a subscription (TY-260)", async () => {
+    const deps = makeDeps({
+      found: true,
+      corrupted: false,
+      commentId: 100,
+      commentUpdatedAt: "2026-05-14T11:00:00Z",
+      state: makeState({ status: "waiting_codex" }),
+    });
+
+    await runPreFix(
+      { ...baseConfig, anthropicApiKey: "", claudeCodeOauthToken: "oauth-test" },
+      deps,
+    );
+
+    expect(deps.setSecret).toHaveBeenCalledWith("oauth-test");
+    expect(deps.warning).toHaveBeenCalledWith(
+      expect.stringContaining("Claude Code OAuth token (subscription)"),
+    );
+  });
+
+  it("does not emit the subscription warning when running with the API key (TY-260)", async () => {
+    const deps = makeDeps({
+      found: true,
+      corrupted: false,
+      commentId: 100,
+      commentUpdatedAt: "2026-05-14T11:00:00Z",
+      state: makeState({ status: "waiting_codex" }),
+    });
+
+    await runPreFix(baseConfig, deps);
+
+    // baseConfig has anthropicApiKey="anthropic-key", claudeCodeOauthToken=""
+    expect(deps.warning).not.toHaveBeenCalledWith(
+      expect.stringContaining("Claude Code OAuth token"),
     );
   });
 

@@ -19201,15 +19201,25 @@ var DEFAULT_CLAUDE_CODE_MODEL_BASE = "claude-sonnet-4-6";
 var DEFAULT_CLAUDE_CODE_MODEL_ESCALATED = "claude-opus-4-7";
 var DEFAULT_AUTO_REVIEW_LABEL = "auto-review-fix";
 function loadConfig() {
+  const anthropicApiKey = input("anthropic-api-key", "ANTHROPIC_API_KEY", "");
+  const claudeCodeOauthToken = input("claude-code-oauth-token", "CLAUDE_CODE_OAUTH_TOKEN", "");
+  if (anthropicApiKey === "" && claudeCodeOauthToken === "") {
+    throw new Error("Set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN (at least one is required).");
+  }
+  if (anthropicApiKey !== "" && claudeCodeOauthToken !== "") {
+    throw new Error("Set exactly one of ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN, not both. Remove one to disambiguate which credential is billed.");
+  }
   return {
     ...loadBaseConfig(),
-    anthropicApiKey: requireInput("anthropic-api-key", "ANTHROPIC_API_KEY")
+    anthropicApiKey,
+    claudeCodeOauthToken
   };
 }
 function loadInitConfig() {
   return {
     ...loadBaseConfig(),
-    anthropicApiKey: ""
+    anthropicApiKey: "",
+    claudeCodeOauthToken: ""
   };
 }
 function loadBaseConfig() {
@@ -20638,8 +20648,12 @@ var defaultDeps3 = {
 };
 async function runPreFix(config, deps = defaultDeps3) {
   deps.setSecret(config.anthropicApiKey);
+  deps.setSecret(config.claudeCodeOauthToken);
   deps.setSecret(config.githubToken);
   deps.setSecret(config.codexReviewRequestToken);
+  if (config.claudeCodeOauthToken !== "") {
+    deps.warning("[pre-fix] Running with Claude Code OAuth token (subscription). Your personal account's usage limits apply \u2014 auto-review iterations may consume your quota quickly, especially with Opus escalation. Consider lowering MAX_REVIEW_ITERATIONS for high-frequency CI use; see docs/operations/security.md (\u8A8D\u8A3C).");
+  }
   deps.setOutput("should_run", "false");
   const triggerCommentId = config.triggerCommentId;
   const prHeadRef = config.prHeadRef;

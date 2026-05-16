@@ -24,6 +24,7 @@ const crashConfig: Config = {
   codexReviewMarker: "Codex Review",
   codexReviewRequestToken: "codex-token",
   anthropicApiKey: "",
+  claudeCodeOauthToken: "",
   githubToken: "github-token",
   repoOwner: "team-yubune",
   repoName: "test-auto-ai-review",

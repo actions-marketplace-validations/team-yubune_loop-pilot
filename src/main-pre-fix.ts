@@ -131,8 +131,28 @@ const defaultDeps: PreFixDeps = {
  */
 export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps): Promise<void> {
   deps.setSecret(config.anthropicApiKey);
+  // TY-260: register the OAuth token as a secret too, so subscription users
+  // get the same automatic log masking as API key users. `loadConfig`
+  // guarantees exactly one of the two is non-empty; `setSecret` on the empty
+  // string is a no-op in `@actions/core`.
+  deps.setSecret(config.claudeCodeOauthToken);
   deps.setSecret(config.githubToken);
   deps.setSecret(config.codexReviewRequestToken);
+
+  // TY-260: surface a one-line caution when running on a personal Claude
+  // Code subscription. The auto-review loop can fire up to
+  // MAX_REVIEW_ITERATIONS (default 20) repairs per PR — with Opus
+  // escalation in the mix — which can burn through a Pro / Max quota fast
+  // and starve the same account's interactive Claude Code usage.
+  if (config.claudeCodeOauthToken !== "") {
+    deps.warning(
+      "[pre-fix] Running with Claude Code OAuth token (subscription). " +
+        "Your personal account's usage limits apply — auto-review iterations " +
+        "may consume your quota quickly, especially with Opus escalation. " +
+        "Consider lowering MAX_REVIEW_ITERATIONS for high-frequency CI use; " +
+        "see docs/operations/security.md (認証).",
+    );
+  }
 
   // Default to should_run=false so any early return leaves the gate closed.
   deps.setOutput("should_run", "false");

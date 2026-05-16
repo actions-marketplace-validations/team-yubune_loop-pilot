@@ -20,6 +20,7 @@ const baseConfig: Config = {
   codexReviewRequestToken: "codex-token",
   autoReviewPushToken: "",
   anthropicApiKey: "",
+  claudeCodeOauthToken: "",
   githubToken: "github-token",
   repoOwner: "team-yubune",
   repoName: "test-auto-ai-review",

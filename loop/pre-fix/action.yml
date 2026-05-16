@@ -10,8 +10,13 @@ inputs:
     required: false
     default: ""
   anthropic-api-key:
-    description: "Anthropic API key (forwarded to claude-code-action via the wrapping workflow)."
-    required: true
+    description: "Anthropic API key (forwarded to claude-code-action via the wrapping workflow). Set this OR claude-code-oauth-token (exactly one). Pre-fix validates the pair and fails fast on neither / both."
+    required: false
+    default: ""
+  claude-code-oauth-token:
+    description: "Claude Code subscription OAuth token (Pro / Max). Set this OR anthropic-api-key (exactly one)."
+    required: false
+    default: ""
   pr-number:
     description: "Pull request number"
     required: true
