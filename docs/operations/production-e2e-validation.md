@@ -1,7 +1,8 @@
 # Production E2E Validation Notes
 
 This document records the TY-145 production-migration validation performed
-against `team-yubune/test-auto-ai-review`.
+against `team-yubune/test-auto-ai-review` and the disposable public repository
+`racoma-dev/auto-review-fix-test`.
 
 Validation date: 2026-05-16
 
@@ -74,8 +75,8 @@ No Node.js 20 action deprecation warning was observed in that run.
 
 ## External Fork PR Validation
 
-This repository cannot currently run the external-fork PR E2E because forking is
-disabled:
+The private source repository cannot currently run the external-fork PR E2E
+because forking is disabled:
 
 ```text
 failed to fork: HTTP 403: The repository exists, but forking is disabled.
@@ -108,6 +109,20 @@ Acceptance criteria for production:
 - no Claude repair step runs,
 - no commit or push is attempted.
 
+The fork guard was then validated in the disposable public repository:
+
+- Base repository: <https://github.com/racoma-dev/auto-review-fix-test>
+- Fork repository: <https://github.com/team-yubune/auto-review-fix-test>
+- Fork PR: <https://github.com/racoma-dev/auto-review-fix-test/pull/1>
+- Guard run: <https://github.com/racoma-dev/auto-review-fix-test/actions/runs/25953479826>
+
+Observed result:
+
+- Workflow A was skipped for the fork PR.
+- A manual `@codex review` caused Workflow B to start.
+- Workflow B failed at `Check fork PR (security guard)`.
+- `actions/checkout`, the auto-fix loop, and commit/push steps were skipped.
+
 ## Branch Protection And Rulesets
 
 This private repository cannot expose branch protection or ruleset data through
@@ -133,6 +148,33 @@ Production validation steps:
    - the auto-fix push succeeds and the required checks run on the repair commit,
    - or branch protection blocks the push, in which case production needs a
      documented alternative token or a human-only repair mode.
+
+The required-check path was partially validated in the disposable public
+repository:
+
+- PR: <https://github.com/racoma-dev/auto-review-fix-test/pull/2>
+- Initial failing commit: `2fe2f16e5d29682d21bd025c7eb23c41e6a1a94d`
+- Auto-fix run: <https://github.com/racoma-dev/auto-review-fix-test/actions/runs/25953872990>
+- Auto-fix commit: `9870dc680b48aee7af81f821366ed3b53755c436`
+
+Observed result:
+
+- branch protection on `main` required the `check` status check;
+- the initial PR `check` failed for the seeded regression;
+- the auto-fix loop repaired the regression and pushed the repair commit;
+- local verification on the repair commit passed `npm run check`;
+- no GitHub Actions `check` check-run was created for the repair commit, so the
+  PR remained blocked by the required check.
+
+This indicates that using `GITHUB_TOKEN` for the auto-fix push is not sufficient
+when production requires CI to run on the repair commit. Production needs either
+a push credential that triggers workflows, such as a dedicated machine-user PAT
+or GitHub App token, or a deliberate follow-up mechanism that creates the
+required check on the repair commit.
+
+The final Codex re-review on the repair commit was also blocked by Codex usage
+limits, so the public-repo run did not reach a fresh `done / no_findings` state
+after branch protection was enabled.
 
 ## Required Checks And `CHECK_COMMAND`
 
@@ -161,11 +203,16 @@ Production guidance:
 
 The following cannot be completed from this repository as currently configured:
 
-- external fork PR E2E, because forking is disabled;
-- branch protection/ruleset validation, because the private repository does not
-  expose those APIs on the current GitHub plan;
+- external fork PR E2E in the private source repository, because forking is
+  disabled;
+- branch protection/ruleset validation in the private source repository, because
+  it does not expose those APIs on the current GitHub plan;
 - production organization policy validation, because org-level token caps are
   specific to the target organization/repository.
+
+The disposable public repository covered the fork guard and demonstrated that
+same-repository auto-fix can push under branch protection. It also exposed the
+remaining required-check gap after a `GITHUB_TOKEN` push.
 
 Use the steps above on the production target before treating TY-145 as fully
 closed.

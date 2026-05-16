@@ -59,8 +59,8 @@ High は本番移植前に完了または明確な保留判断が必要な項目
 - [ ] Bot Token のスコープ最小化と Fine-grained PAT の設定（TY-143）
 - [ ] `CODEX_REVIEW_REQUEST_TOKEN` の運用方式決定（個人 PAT 継続ではなく、専用 machine user または GitHub App token への置き換えを検討。TY-143）
 - [x] Fork PR 起動防止の実装
-- [ ] 外部 fork PR を使った起動防止 E2E 検証（TY-145）。2026-05-16 に本 repo で試行したが、GitHub API が `forking is disabled` を返したため、本番対象 repo で人間が fork PR を作って確認する必要がある。手順は [Production E2E Validation Notes](../operations/production-e2e-validation.md#external-fork-pr-validation) を参照
-- [ ] branch protection / required checks 下での commit/push 可否確認（TY-145）。2026-05-16 時点で本 repo は private non-Pro 制約により branch protection / rulesets API が 403 になるため、本番対象 repo で確認する。手順は [Production E2E Validation Notes](../operations/production-e2e-validation.md#branch-protection-and-rulesets) を参照
+- [x] 外部 fork PR を使った起動防止 E2E 検証（TY-145）。2026-05-16 に disposable public repo `racoma-dev/auto-review-fix-test` の fork PR #1 で、Workflow A が起動せず、手動レビュー後の Workflow B も fork guard で checkout / auto-fix / push 前に停止することを確認済み。手順と証跡は [Production E2E Validation Notes](../operations/production-e2e-validation.md#external-fork-pr-validation) を参照
+- [ ] branch protection / required checks 下での commit/push 可否確認（TY-145）。2026-05-16 に disposable public repo PR #2 で auto-fix push 自体は成功したが、`GITHUB_TOKEN` による repair commit push 後に必須CI `check` が再実行されず、PR は required check で blocked のままになった。production では machine user PAT / GitHub App token 等、repair commit 上で required checks を作る方式の決定が必要。詳細は [Production E2E Validation Notes](../operations/production-e2e-validation.md#branch-protection-and-rulesets) を参照
 - [ ] `MAX_REVIEW_ITERATIONS` の適正値決定（コスト試算に基づく。20以上も検討。TY-140）
 - [ ] `/restart-review` 等のリカバリコマンド実装（TY-144）
 - [ ] hidden comment 消失時の自動リカバリ機構（TY-144）
@@ -79,7 +79,7 @@ High は本番移植前に完了または明確な保留判断が必要な項目
 
 本番リポジトリでは branch protection、required checks、organization policy が異なる可能性があるため、上記は移植先でも最小 PR で再確認する。
 
-TY-145 の 2026-05-16 検証結果は [Production E2E Validation Notes](../operations/production-e2e-validation.md) に記録した。本 repo では同一リポジトリ PR の auto-fix / `CHECK_COMMAND` / commit-push / no-findings 完了は確認済み。一方、外部 fork PR と branch protection / rulesets は GitHub 設定・プラン制約により本 repo では未完了であり、本番対象 repo での人間確認が必要。
+TY-145 の 2026-05-16 検証結果は [Production E2E Validation Notes](../operations/production-e2e-validation.md) に記録した。本 repo では同一リポジトリ PR の auto-fix / `CHECK_COMMAND` / commit-push / no-findings 完了を確認済み。disposable public repo では fork guard と branch protection 下での auto-fix push を確認した。一方、repair commit 上の required check 再実行と、Codex クォータ制限後の最終 no-findings 再レビューは未完了。
 
 ## PoC 完了条件から外す項目
 
