@@ -1,4 +1,9 @@
 import { ghApi } from "./gh.js";
+import {
+  upsertStatusComment,
+  type StatusEntry,
+  type StatusUpdate,
+} from "./status-comment.js";
 import type { StopReason } from "./types.js";
 
 const STOP_REASON_LABELS: Record<StopReason, string> = {
@@ -16,6 +21,11 @@ const STOP_REASON_LABELS: Record<StopReason, string> = {
   max_turns_exceeded: "Claude Code Action exhausted the configured --max-turns budget",
   codex_usage_limit: "Codex reported usage / quota limits; no review was performed",
 };
+
+/** Returns an ISO-8601 timestamp at second resolution (UTC). */
+function nowIso(): string {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+}
 
 /**
  * Posts a comment to a GitHub PR issue and returns the new comment's numeric ID.
@@ -49,8 +59,28 @@ export async function postComment(
   return commentId;
 }
 
+function entry(
+  kind: StatusEntry["kind"],
+  title: string,
+  body: string,
+): StatusEntry {
+  return { kind, title, body, timestamp: nowIso() };
+}
+
+async function applyStatusUpdate(
+  owner: string,
+  name: string,
+  pr: number,
+  update: StatusUpdate,
+  token: string,
+): Promise<number> {
+  return upsertStatusComment(owner, name, pr, update, token);
+}
+
 /**
- * Posts a summary comment after a successful claude-code-action repair iteration.
+ * Records a successful claude-code-action repair iteration in the PR's
+ * auto-review status comment (creating it if missing). Returns the status
+ * comment's ID.
  */
 export async function postClaudeCodeActionFixSummary(
   owner: string,
@@ -58,6 +88,7 @@ export async function postClaudeCodeActionFixSummary(
   pr: number,
   iteration: number,
   changedPaths: string[],
+  lastCommit: string | null | undefined,
   token: string,
 ): Promise<number> {
   const fileLines =
@@ -65,13 +96,27 @@ export async function postClaudeCodeActionFixSummary(
       ? changedPaths.map((path) => `- \`${path}\``).join("\n")
       : "_(no files changed)_";
 
-  const body = `**Auto-fix applied (iteration ${iteration})**\n\n${fileLines}`;
-
-  return postComment(owner, name, pr, body, token);
+  return applyStatusUpdate(
+    owner,
+    name,
+    pr,
+    {
+      current: `Fixing — iteration ${iteration} applied`,
+      nextAction: "Awaiting next Codex review.",
+      lastCommit,
+      newEntry: entry(
+        "auto_fix_applied",
+        `Iteration ${iteration} — Auto-fix applied`,
+        fileLines,
+      ),
+    },
+    token,
+  );
 }
 
 /**
- * Posts a completion comment when all P0/P1/P2 findings have been resolved.
+ * Marks the auto-review as completed in the PR's status comment. Returns the
+ * status comment's ID.
  */
 export async function postCompletionComment(
   owner: string,
@@ -80,13 +125,27 @@ export async function postCompletionComment(
   iterations: number,
   token: string,
 ): Promise<number> {
-  const body = `Auto-review completed.\n\nIterations: ${iterations}\nAll P0/P1/P2 findings have been resolved.`;
-
-  return postComment(owner, name, pr, body, token);
+  return applyStatusUpdate(
+    owner,
+    name,
+    pr,
+    {
+      current: "Completed",
+      openFindings: 0,
+      nextAction: "All P0/P1/P2 findings have been resolved.",
+      newEntry: entry(
+        "completed",
+        `Auto-review completed (${iterations} iterations)`,
+        "All P0/P1/P2 findings have been resolved.",
+      ),
+    },
+    token,
+  );
 }
 
 /**
- * Posts a stop comment when automation is halted for a specific reason.
+ * Records a stop event in the PR's status comment. Returns the status
+ * comment's ID.
  *
  * @param stopReason - The reason automation was stopped
  * @param reviewId - The ID of the last processed Codex review comment
@@ -104,23 +163,31 @@ export async function postStopComment(
   token: string,
 ): Promise<number> {
   const formattedReason = STOP_REASON_LABELS[stopReason];
-
   const body = [
-    "Automation stopped.",
-    "",
     `Reason: ${formattedReason}`,
     `Last processed Codex review: #${reviewId}`,
     `Open P0/P1/P2 findings remaining: ${remainingFindings}`,
     `Detail: ${detail}`,
-    "Recommendation: manual intervention required.",
   ].join("\n");
 
-  return postComment(owner, name, pr, body, token);
+  return applyStatusUpdate(
+    owner,
+    name,
+    pr,
+    {
+      current: `Stopped — ${formattedReason}`,
+      openFindings: remainingFindings,
+      nextAction: "Manual intervention required.",
+      newEntry: entry("stopped", `Automation stopped — ${formattedReason}`, body),
+    },
+    token,
+  );
 }
 
 /**
- * Posts a comment when the CHECK_COMMAND fails after a fix is applied.
- * The fix changes are rolled back before this comment is posted.
+ * Records a CHECK_COMMAND failure in the PR's status comment. The fix
+ * changes are rolled back before this entry is added. Returns the status
+ * comment's ID.
  *
  * @param checkOutput - The stdout/stderr output from the failed check command
  */
@@ -133,14 +200,29 @@ export async function postTestFailureComment(
 ): Promise<number> {
   // Escape triple-backtick sequences in output to prevent Markdown code fence breakout
   const safeOutput = checkOutput.replace(/`{3,}/g, "``");
-  const body = `**Auto-fix stopped: CHECK_COMMAND failed**\n\n\`\`\`\n${safeOutput}\n\`\`\`\n\nChanges have been rolled back. Manual intervention required.`;
+  const body = `\`\`\`\n${safeOutput}\n\`\`\`\n\nChanges have been rolled back.`;
 
-  return postComment(owner, name, pr, body, token);
+  return applyStatusUpdate(
+    owner,
+    name,
+    pr,
+    {
+      current: "Stopped — CHECK_COMMAND failed after fix",
+      nextAction: "Manual intervention required.",
+      newEntry: entry(
+        "test_failure",
+        "Auto-fix stopped: CHECK_COMMAND failed",
+        body,
+      ),
+    },
+    token,
+  );
 }
 
 /**
- * Posts a comment when Workflow A did not complete initialization,
- * prompting the user to re-run or manually post the review request.
+ * Records a Workflow A initialization failure in the PR's status comment,
+ * prompting the user to re-run or manually post the review request. Returns
+ * the status comment's ID.
  */
 export async function postInitIncompleteComment(
   owner: string,
@@ -148,15 +230,30 @@ export async function postInitIncompleteComment(
   pr: number,
   token: string,
 ): Promise<number> {
-  const body =
-    "Auto-review initialization incomplete. Workflow A may have failed before posting the initial review request. Please re-run Workflow A or manually post '@codex review'.";
-
-  return postComment(owner, name, pr, body, token);
+  return applyStatusUpdate(
+    owner,
+    name,
+    pr,
+    {
+      current: "Init incomplete",
+      nextAction: "Re-run Workflow A or manually post '@codex review'.",
+      newEntry: entry(
+        "init_incomplete",
+        "Auto-review initialization incomplete",
+        "Workflow A may have failed before posting the initial review request.",
+      ),
+    },
+    token,
+  );
 }
 
 /**
  * Posts a '@codex review' comment to trigger a Codex review on the PR.
  * Returns the numeric ID of the newly created comment.
+ *
+ * Stays as a separate top-level comment because Codex relies on the trigger
+ * comment being its own conversation entry; folding it into the status
+ * comment would suppress the trigger.
  */
 export async function postCodexReviewRequest(
   owner: string,

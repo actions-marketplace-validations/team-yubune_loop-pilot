@@ -288,6 +288,7 @@ describe("runPostFix", () => {
       99,
       2,
       ["src/foo.ts", "src/new-helper.ts", "tests/new-helper.test.ts"],
+      "abc1234",
       "github-token",
     );
   });

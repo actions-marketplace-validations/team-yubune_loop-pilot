@@ -4978,22 +4978,22 @@ var require_formdata = __commonJS({
         name = webidl.converters.USVString(name, prefix, "name");
         value = isBlobLike(value) ? webidl.converters.Blob(value, prefix, "value", { strict: false }) : webidl.converters.USVString(value, prefix, "value");
         filename = arguments.length === 3 ? webidl.converters.USVString(filename, prefix, "filename") : void 0;
-        const entry = makeEntry(name, value, filename);
-        this[kState].push(entry);
+        const entry2 = makeEntry(name, value, filename);
+        this[kState].push(entry2);
       }
       delete(name) {
         webidl.brandCheck(this, _FormData);
         const prefix = "FormData.delete";
         webidl.argumentLengthCheck(arguments, 1, prefix);
         name = webidl.converters.USVString(name, prefix, "name");
-        this[kState] = this[kState].filter((entry) => entry.name !== name);
+        this[kState] = this[kState].filter((entry2) => entry2.name !== name);
       }
       get(name) {
         webidl.brandCheck(this, _FormData);
         const prefix = "FormData.get";
         webidl.argumentLengthCheck(arguments, 1, prefix);
         name = webidl.converters.USVString(name, prefix, "name");
-        const idx = this[kState].findIndex((entry) => entry.name === name);
+        const idx = this[kState].findIndex((entry2) => entry2.name === name);
         if (idx === -1) {
           return null;
         }
@@ -5004,14 +5004,14 @@ var require_formdata = __commonJS({
         const prefix = "FormData.getAll";
         webidl.argumentLengthCheck(arguments, 1, prefix);
         name = webidl.converters.USVString(name, prefix, "name");
-        return this[kState].filter((entry) => entry.name === name).map((entry) => entry.value);
+        return this[kState].filter((entry2) => entry2.name === name).map((entry2) => entry2.value);
       }
       has(name) {
         webidl.brandCheck(this, _FormData);
         const prefix = "FormData.has";
         webidl.argumentLengthCheck(arguments, 1, prefix);
         name = webidl.converters.USVString(name, prefix, "name");
-        return this[kState].findIndex((entry) => entry.name === name) !== -1;
+        return this[kState].findIndex((entry2) => entry2.name === name) !== -1;
       }
       set(name, value, filename = void 0) {
         webidl.brandCheck(this, _FormData);
@@ -5025,16 +5025,16 @@ var require_formdata = __commonJS({
         name = webidl.converters.USVString(name, prefix, "name");
         value = isBlobLike(value) ? webidl.converters.Blob(value, prefix, "name", { strict: false }) : webidl.converters.USVString(value, prefix, "name");
         filename = arguments.length === 3 ? webidl.converters.USVString(filename, prefix, "name") : void 0;
-        const entry = makeEntry(name, value, filename);
-        const idx = this[kState].findIndex((entry2) => entry2.name === name);
+        const entry2 = makeEntry(name, value, filename);
+        const idx = this[kState].findIndex((entry3) => entry3.name === name);
         if (idx !== -1) {
           this[kState] = [
             ...this[kState].slice(0, idx),
-            entry,
-            ...this[kState].slice(idx + 1).filter((entry2) => entry2.name !== name)
+            entry2,
+            ...this[kState].slice(idx + 1).filter((entry3) => entry3.name !== name)
           ];
         } else {
-          this[kState].push(entry);
+          this[kState].push(entry2);
         }
       }
       [nodeUtil.inspect.custom](depth, options) {
@@ -8784,16 +8784,16 @@ var require_env_http_proxy_agent = __commonJS({
           return false;
         }
         for (let i = 0; i < this.#noProxyEntries.length; i++) {
-          const entry = this.#noProxyEntries[i];
-          if (entry.port && entry.port !== port) {
+          const entry2 = this.#noProxyEntries[i];
+          if (entry2.port && entry2.port !== port) {
             continue;
           }
-          if (!/^[.*]/.test(entry.hostname)) {
-            if (hostname === entry.hostname) {
+          if (!/^[.*]/.test(entry2.hostname)) {
+            if (hostname === entry2.hostname) {
               return false;
             }
           } else {
-            if (hostname.endsWith(entry.hostname.replace(/^\*/, ""))) {
+            if (hostname.endsWith(entry2.hostname.replace(/^\*/, ""))) {
               return false;
             }
           }
@@ -8805,13 +8805,13 @@ var require_env_http_proxy_agent = __commonJS({
         const noProxySplit = noProxyValue.split(/[,\s]/);
         const noProxyEntries = [];
         for (let i = 0; i < noProxySplit.length; i++) {
-          const entry = noProxySplit[i];
-          if (!entry) {
+          const entry2 = noProxySplit[i];
+          if (!entry2) {
             continue;
           }
-          const parsed = entry.match(/^(.+):(\d+)$/);
+          const parsed = entry2.match(/^(.+):(\d+)$/);
           noProxyEntries.push({
-            hostname: (parsed ? parsed[1] : entry).toLowerCase(),
+            hostname: (parsed ? parsed[1] : entry2).toLowerCase(),
             port: parsed ? Number.parseInt(parsed[2], 10) : 0
           });
         }
@@ -19278,10 +19278,10 @@ function validateState(obj) {
   if ("previousCheckFailure" in s && s.previousCheckFailure !== null && typeof s.previousCheckFailure !== "string") {
     return false;
   }
-  for (const entry of s.findingsHashHistory) {
-    if (typeof entry !== "object" || entry === null)
+  for (const entry2 of s.findingsHashHistory) {
+    if (typeof entry2 !== "object" || entry2 === null)
       return false;
-    const e = entry;
+    const e = entry2;
     if (typeof e.iteration !== "number" || typeof e.hash !== "string")
       return false;
     if ("modelTier" in e && e.modelTier !== void 0 && e.modelTier !== "base" && e.modelTier !== "escalated") {
@@ -19787,6 +19787,194 @@ function truncatePreviousCheckFailure(output, maxChars = PREVIOUS_CHECK_FAILURE_
   return buildHeader(omitted) + tail;
 }
 
+// dist/status-comment.js
+var STATUS_COMMENT_MARKER = "auto-review-status";
+var STATUS_COMMENT_OPEN = `<!-- ${STATUS_COMMENT_MARKER} -->`;
+var STATUS_COMMENT_DATA_OPEN = `<!-- ${STATUS_COMMENT_MARKER}-data`;
+var STATUS_COMMENT_DATA_CLOSE = "-->";
+var STATUS_COMMENT_VISIBLE_HEADER = "## Auto-review status";
+var MAX_ENTRIES = 30;
+function createInitialStatusSnapshot() {
+  return {
+    current: "\u2014",
+    lastCommit: null,
+    openFindings: null,
+    nextAction: "\u2014",
+    entries: []
+  };
+}
+function renderEntry(entry2) {
+  return `### ${entry2.title}
+*${entry2.timestamp}*
+
+${entry2.body}`;
+}
+function renderStatusCommentBody(snapshot) {
+  const header = [
+    STATUS_COMMENT_OPEN,
+    STATUS_COMMENT_VISIBLE_HEADER,
+    "",
+    `**Current**: ${snapshot.current}`,
+    `**Last commit**: ${snapshot.lastCommit ?? "\u2014"}`,
+    `**Open findings**: ${snapshot.openFindings ?? "\u2014"}`,
+    `**Next action**: ${snapshot.nextAction}`,
+    ""
+  ].join("\n");
+  const historyBody = snapshot.entries.length === 0 ? "_(no entries yet)_" : snapshot.entries.map(renderEntry).join("\n\n");
+  const history = [
+    "<details>",
+    `<summary>History (${snapshot.entries.length} ${snapshot.entries.length === 1 ? "entry" : "entries"})</summary>`,
+    "",
+    historyBody,
+    "",
+    "</details>",
+    ""
+  ].join("\n");
+  const data = [
+    STATUS_COMMENT_DATA_OPEN,
+    JSON.stringify(snapshot),
+    STATUS_COMMENT_DATA_CLOSE
+  ].join("\n");
+  return `${header}
+${history}
+${data}
+`;
+}
+function parseStatusCommentBody(body) {
+  const dataStart = body.indexOf(STATUS_COMMENT_DATA_OPEN);
+  if (dataStart === -1)
+    return null;
+  const afterOpen = body.slice(dataStart + STATUS_COMMENT_DATA_OPEN.length);
+  const closeIdx = afterOpen.indexOf(STATUS_COMMENT_DATA_CLOSE);
+  if (closeIdx === -1)
+    return null;
+  const jsonRaw = afterOpen.slice(0, closeIdx).trim();
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonRaw);
+  } catch {
+    return null;
+  }
+  if (!isStatusSnapshot(parsed))
+    return null;
+  return parsed;
+}
+function isStatusSnapshot(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const v = value;
+  if (typeof v.current !== "string")
+    return false;
+  if (v.lastCommit !== null && typeof v.lastCommit !== "string")
+    return false;
+  if (v.openFindings !== null && typeof v.openFindings !== "number")
+    return false;
+  if (typeof v.nextAction !== "string")
+    return false;
+  if (!Array.isArray(v.entries))
+    return false;
+  for (const e of v.entries) {
+    if (typeof e !== "object" || e === null)
+      return false;
+    const en = e;
+    if (typeof en.timestamp !== "string")
+      return false;
+    if (typeof en.title !== "string")
+      return false;
+    if (typeof en.body !== "string")
+      return false;
+    if (en.kind !== "auto_fix_applied" && en.kind !== "completed" && en.kind !== "stopped" && en.kind !== "test_failure" && en.kind !== "init_incomplete")
+      return false;
+  }
+  return true;
+}
+function applyStatusUpdate(snapshot, update) {
+  const entries = update.newEntry ? [update.newEntry, ...snapshot.entries].slice(0, MAX_ENTRIES) : snapshot.entries;
+  return {
+    current: update.current ?? snapshot.current,
+    lastCommit: update.lastCommit === void 0 ? snapshot.lastCommit : update.lastCommit,
+    openFindings: update.openFindings === void 0 ? snapshot.openFindings : update.openFindings,
+    nextAction: update.nextAction ?? snapshot.nextAction,
+    entries
+  };
+}
+function isStatusCommentRecord(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const v = value;
+  return typeof v.id === "number" && typeof v.body === "string";
+}
+async function findStatusComment(owner, name, pr, token) {
+  const stdout = await ghApi([
+    "api",
+    `repos/${owner}/${name}/issues/${pr}/comments`,
+    "--paginate",
+    "--jq",
+    `.[] | select(.body | startswith("${STATUS_COMMENT_OPEN}")) | {id: .id, body: .body} | @json`
+  ], token);
+  const trimmed = stdout.trim();
+  if (!trimmed)
+    return null;
+  const lines = trimmed.split("\n").filter((l) => l.trim());
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(lines[i]);
+      if (isStatusCommentRecord(parsed))
+        return parsed;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+async function createStatusCommentImpl(owner, name, pr, body, token) {
+  const stdout = await ghApi([
+    "api",
+    "--method",
+    "POST",
+    `repos/${owner}/${name}/issues/${pr}/comments`,
+    "--field",
+    `body=${body}`,
+    "--jq",
+    ".id"
+  ], token);
+  const id = parseInt(stdout.trim(), 10);
+  if (Number.isNaN(id)) {
+    throw new Error(`createStatusComment: unexpected response from GitHub API: ${stdout.trim()}`);
+  }
+  return id;
+}
+async function updateStatusCommentImpl(owner, name, commentId, body, token) {
+  await ghApi([
+    "api",
+    "--method",
+    "PATCH",
+    `repos/${owner}/${name}/issues/comments/${commentId}`,
+    "--field",
+    `body=${body}`,
+    "--jq",
+    ".id"
+  ], token);
+}
+var defaultDeps2 = {
+  findStatusComment,
+  createStatusComment: createStatusCommentImpl,
+  updateStatusComment: updateStatusCommentImpl
+};
+async function upsertStatusComment(owner, name, pr, update, token, deps = defaultDeps2) {
+  const existing = await deps.findStatusComment(owner, name, pr, token);
+  if (existing === null) {
+    const snapshot2 = applyStatusUpdate(createInitialStatusSnapshot(), update);
+    const body2 = renderStatusCommentBody(snapshot2);
+    return deps.createStatusComment(owner, name, pr, body2, token);
+  }
+  const previousSnapshot = parseStatusCommentBody(existing.body) ?? createInitialStatusSnapshot();
+  const snapshot = applyStatusUpdate(previousSnapshot, update);
+  const body = renderStatusCommentBody(snapshot);
+  await deps.updateStatusComment(owner, name, existing.id, body, token);
+  return existing.id;
+}
+
 // dist/comment-poster.js
 var STOP_REASON_LABELS = {
   no_findings: "no P0/P1/P2 findings",
@@ -19803,6 +19991,9 @@ var STOP_REASON_LABELS = {
   max_turns_exceeded: "Claude Code Action exhausted the configured --max-turns budget",
   codex_usage_limit: "Codex reported usage / quota limits; no review was performed"
 };
+function nowIso() {
+  return (/* @__PURE__ */ new Date()).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
 async function postComment(owner, name, pr, body, token) {
   const stdout = await ghApi([
     "api",
@@ -19820,43 +20011,54 @@ async function postComment(owner, name, pr, body, token) {
   }
   return commentId;
 }
+function entry(kind, title, body) {
+  return { kind, title, body, timestamp: nowIso() };
+}
+async function applyStatusUpdate2(owner, name, pr, update, token) {
+  return upsertStatusComment(owner, name, pr, update, token);
+}
 async function postClaudeCodeActionFixSummary(owner, name, pr, iteration, changedPaths, token) {
   const fileLines = changedPaths.length > 0 ? changedPaths.map((path) => `- \`${path}\``).join("\n") : "_(no files changed)_";
-  const body = `**Auto-fix applied (iteration ${iteration})**
-
-${fileLines}`;
-  return postComment(owner, name, pr, body, token);
+  return applyStatusUpdate2(owner, name, pr, {
+    current: `Fixing \u2014 iteration ${iteration} applied`,
+    nextAction: "Awaiting next Codex review.",
+    newEntry: entry("auto_fix_applied", `Iteration ${iteration} \u2014 Auto-fix applied`, fileLines)
+  }, token);
 }
 async function postStopComment(owner, name, pr, stopReason, reviewId, remainingFindings, detail, token) {
   const formattedReason = STOP_REASON_LABELS[stopReason];
   const body = [
-    "Automation stopped.",
-    "",
     `Reason: ${formattedReason}`,
     `Last processed Codex review: #${reviewId}`,
     `Open P0/P1/P2 findings remaining: ${remainingFindings}`,
-    `Detail: ${detail}`,
-    "Recommendation: manual intervention required."
+    `Detail: ${detail}`
   ].join("\n");
-  return postComment(owner, name, pr, body, token);
+  return applyStatusUpdate2(owner, name, pr, {
+    current: `Stopped \u2014 ${formattedReason}`,
+    openFindings: remainingFindings,
+    nextAction: "Manual intervention required.",
+    newEntry: entry("stopped", `Automation stopped \u2014 ${formattedReason}`, body)
+  }, token);
 }
 async function postTestFailureComment(owner, name, pr, checkOutput, token) {
   const safeOutput = checkOutput.replace(/`{3,}/g, "``");
-  const body = `**Auto-fix stopped: CHECK_COMMAND failed**
-
-\`\`\`
+  const body = `\`\`\`
 ${safeOutput}
 \`\`\`
 
-Changes have been rolled back. Manual intervention required.`;
-  return postComment(owner, name, pr, body, token);
+Changes have been rolled back.`;
+  return applyStatusUpdate2(owner, name, pr, {
+    current: "Stopped \u2014 CHECK_COMMAND failed after fix",
+    nextAction: "Manual intervention required.",
+    newEntry: entry("test_failure", "Auto-fix stopped: CHECK_COMMAND failed", body)
+  }, token);
 }
 async function postCodexReviewRequest(owner, name, pr, token) {
   return postComment(owner, name, pr, "@codex review", token);
 }
 
 // dist/main-post-fix.js
-var defaultDeps2 = {
+var defaultDeps3 = {
   readState,
   updateStateComment,
   runCheckCommand,
@@ -19913,7 +20115,7 @@ function detectMaxTurnsExceeded(executionFileContents) {
   const haystack = executionFileContents.toLowerCase();
   return haystack.includes("max_turns") || haystack.includes("max turns") || haystack.includes("maximum turns");
 }
-async function runPostFix(config, deps = defaultDeps2, inputs = readPostFixInputs()) {
+async function runPostFix(config, deps = defaultDeps3, inputs = readPostFixInputs()) {
   deps.setSecret(config.githubToken);
   deps.setSecret(config.codexReviewRequestToken);
   deps.info(`[post-fix] Starting post-fix for PR #${config.prNumber}, iteration ${inputs.iteration}, action outcome: ${inputs.actionOutcome}`);

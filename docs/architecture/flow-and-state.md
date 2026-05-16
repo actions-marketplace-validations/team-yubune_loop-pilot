@@ -126,14 +126,9 @@ Claude 修正後、CI 成功時のみ `@codex review` を再度投稿する。
 
 #### 正常終了
 - 最新 Codex review に P0 / P1 がない
-- `status` を `done` に設定し、PR に完了コメントを投稿する
+- `status` を `done` に設定し、PR の **status comment** に完了エントリを追記する
 
-```text
-Auto-review completed.
-
-Iterations: 3
-All P0/P1 findings have been resolved.
-```
+status comment は PR ごとに 1 つだけ作成・更新される単一の可視コメントで、ヘッダー（現在状態 / 最終 commit / 残 findings / 次アクション）と `<details>` 折りたたみの履歴を持つ（[Status comment](#status-comment) 参照）。
 
 - 初回レビューで P0 / P1 が 0 件の場合も同様に正常終了。`iteration_count` は 0 のまま
 
@@ -323,6 +318,75 @@ hidden comment が人間により削除・編集された場合、Workflow B は
 - hidden comment が見つからない場合: Workflow A が未実行とみなし、処理をスキップする（現行の挙動）
 - hidden comment の JSON パースに失敗した場合: `status: stopped`, `stop_reason: state_corrupted` で停止し、PR に状態破損を報告するコメントを投稿する
 - **リカバリ手順:** 人間が `@codex review` を再投稿するか、hidden comment を手動で再作成する。Workflow A の再実行（`workflow_dispatch` 等）も検討可
+
+---
+
+## Status comment
+
+auto-review の進行状況を人間が追いやすくするため、PR ごとに **1 件だけ作成・更新される可視のステータスコメント** を維持する。`src/status-comment.ts` の `upsertStatusComment` がこの単一コメントの find-or-create + update をハンドリングする。
+
+### 責務分離（hidden state comment との違い）
+
+| | hidden state comment | status comment |
+|---|---|---|
+| 目的 | workflow が次 iteration の挙動を決めるための機械可読 state | 人間がPRで最新状態を一目で把握するための可視レポート |
+| マーカー | `<!-- auto-review-state` | `<!-- auto-review-status -->` |
+| 担当モジュール | `src/state-manager.ts` | `src/status-comment.ts` |
+| 楽観ロック | 必要（preflight GET → PATCH、412 検出） | 不要（人間向け表示。複数 worker が同時に書く想定はないが、競合してもデータロスは最小限） |
+| 件数 | PRごとに 1 件 | PRごとに 1 件 |
+| 内容 | JSON のみ | 可視 markdown ヘッダー + `<details>` 履歴 + 末尾の hidden JSON データブロック |
+
+### 形式
+
+```markdown
+<!-- auto-review-status -->
+## Auto-review status
+
+**Current**: Fixing — iteration 3 applied
+**Last commit**: abc1234
+**Open findings**: 2
+**Next action**: Awaiting next Codex review.
+
+<details>
+<summary>History (3 entries)</summary>
+
+### Iteration 3 — Auto-fix applied
+*2026-05-16T01:10:00Z*
+
+- `src/foo.ts`
+- `src/bar.ts`
+
+### Auto-fix stopped: CHECK_COMMAND failed
+*2026-05-16T01:05:00Z*
+
+…
+
+</details>
+
+<!-- auto-review-status-data
+{"current":"...","lastCommit":"abc1234","openFindings":2,"nextAction":"...","entries":[...]}
+-->
+```
+
+末尾の `auto-review-status-data` ブロックが source of truth。可視 markdown 部はこの JSON から毎回 re-render される。これにより update は「JSON を deserialize → 差分適用 → markdown を rebuild → PATCH」で完結する。
+
+### 更新トリガー
+
+`src/comment-poster.ts` の以下 5 関数が status comment に append する:
+
+| 関数 | エントリ kind | current の遷移 |
+|------|---|---|
+| `postClaudeCodeActionFixSummary` | `auto_fix_applied` | `Fixing — iteration N applied` |
+| `postCompletionComment` | `completed` | `Completed` |
+| `postStopComment` | `stopped` | `Stopped — <reason>` |
+| `postTestFailureComment` | `test_failure` | `Stopped — CHECK_COMMAND failed after fix` |
+| `postInitIncompleteComment` | `init_incomplete` | `Init incomplete` |
+
+`postCodexReviewRequest` (`@codex review`) は status comment に折り込まず、トリガーコメントとして独立して投稿し続ける（Codex 側の検知トリガーになるため）。
+
+### 履歴の上限
+
+`MAX_ENTRIES = 30`。新しい entry は先頭に prepend され、上限を超えた古い entry から落とす。
 
 ---
 

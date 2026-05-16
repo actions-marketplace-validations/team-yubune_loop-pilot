@@ -19529,6 +19529,11 @@ function parseCommentSnapshot(stdout, context) {
   throw new Error(`${context}: unexpected response from GitHub API: ${stdout}`);
 }
 
+// dist/status-comment.js
+var STATUS_COMMENT_MARKER = "auto-review-status";
+var STATUS_COMMENT_OPEN = `<!-- ${STATUS_COMMENT_MARKER} -->`;
+var STATUS_COMMENT_DATA_OPEN = `<!-- ${STATUS_COMMENT_MARKER}-data`;
+
 // dist/comment-poster.js
 async function postComment(owner, name, pr, body, token) {
   const stdout = await ghApi([

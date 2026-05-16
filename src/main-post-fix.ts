@@ -552,6 +552,7 @@ export async function runPostFix(
     config.prNumber,
     inputs.iteration,
     modifiedFiles,
+    commitSha || undefined,
     config.githubToken,
   );
 
