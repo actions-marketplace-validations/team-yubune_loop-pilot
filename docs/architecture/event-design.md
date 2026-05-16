@@ -164,6 +164,28 @@ Codex が GitHub 連携済みユーザーのメンションとして `@codex rev
 - この token は `@codex review` 投稿専用であり、hidden comment、checkout/push、Artifact 収集、review comment 取得などは従来通り `GITHUB_TOKEN` を使う
 - secret 未設定時は `GITHUB_TOKEN` に fallback し、既存 workflow との互換性を保つ
 
+### Auto-review push token
+
+Branch protection の required checks がある本番 repo では、repair commit を
+`GITHUB_TOKEN` で push しても、その commit 上で GitHub Actions の required
+check が作成されない場合がある。Workflow B は action input
+`auto-review-push-token` を受け取り、設定されている場合は post-fix の
+repair commit push にだけ使用する。
+
+```yaml
+- uses: ./loop
+  with:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    codex-review-request-token: ${{ secrets.CODEX_REVIEW_REQUEST_TOKEN }}
+    auto-review-push-token: ${{ secrets.AUTO_REVIEW_PUSH_TOKEN }}
+```
+
+- `AUTO_REVIEW_PUSH_TOKEN` は Repository secrets に登録する
+- 推奨は対象 repo に限定した machine user Fine-grained PAT または GitHub App installation token
+- 必須権限は repair commit push 用の `Contents: Read and write`
+- `CODEX_REVIEW_REQUEST_TOKEN` とは分け、レビュー依頼用 token に push 権限を持たせない
+- secret 未設定時は既存挙動との互換性のため `GITHUB_TOKEN` 相当の push 経路を使う
+
 ### review / issue_comment トリガー特有の注意点
 
 `pull_request_review` / `issue_comment` でトリガーされた workflow は、PR ブランチを自動 checkout しない。PR ブランチのコードを操作するには、明示的に PR の head ref を指定する必要がある。
@@ -188,12 +210,12 @@ Codex が GitHub 連携済みユーザーのメンションとして `@codex rev
 
 Workflow B は GitHub API で取得した `.head.repo.full_name` が空または `github.repository` と異なる場合、fork PR または source repo 不明として `Run auto-fix loop` より前に停止する。`pr-head-ref` は action input として渡した後、action 側で ref 名の危険文字を検査してから checkout する。
 
-> **注意: push 権限について:** PR ブランチにブランチ保護ルール（required reviews, status checks 等）が設定されている場合、`GITHUB_TOKEN` による push がブロックされる可能性がある。この場合、以下のいずれかで対処する:
+> **注意: push 権限について:** PR ブランチにブランチ保護ルール（required reviews, status checks 等）が設定されている場合、`GITHUB_TOKEN` による push がブロックされる、または push 後の required checks が修復コミット上で発火しない可能性がある。この場合、以下のいずれかで対処する:
 > - ブランチ保護ルールで **"Allow specified actors to bypass required pull requests"** に GitHub Actions bot を追加する
-> - `GITHUB_TOKEN` の代わりに GitHub App トークンまたは Fine-grained PAT を使用する（`permissions: contents: write` が必要）
+> - `AUTO_REVIEW_PUSH_TOKEN` に GitHub App token または Fine-grained PAT を設定し、repair commit push だけ専用 token で行う
 > - PoC 段階ではブランチ保護ルールを緩めるか無効化する
 >
-> **PoC 実測:** Repository UI では default workflow permission を write に変更できない環境だったが、workflow YAML の `permissions: contents: write` により PR #7 の head branch へ commit/push できた。
+> **PoC 実測:** Repository UI では default workflow permission を write に変更できない環境だったが、workflow YAML の `permissions: contents: write` により PR #7 の head branch へ commit/push できた。TY-145 では public disposable repo で `GITHUB_TOKEN` repair push 後に required check が発火しないことを確認したため、TY-257 で `AUTO_REVIEW_PUSH_TOKEN` を追加した。
 
 ### Workflow B の処理フェーズ
 

@@ -6,6 +6,7 @@
 #     with:
 #       github-token: ${{ secrets.GITHUB_TOKEN }}
 #       codex-review-request-token: ${{ secrets.CODEX_REVIEW_REQUEST_TOKEN }}
+#       auto-review-push-token: ${{ secrets.AUTO_REVIEW_PUSH_TOKEN }}
 #       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 #       pr-number: ${{ github.event.issue.number || github.event.pull_request.number }}
 #       pr-head-ref: ${{ steps.pr.outputs.head_ref }}
@@ -149,6 +150,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           codex-review-request-token: ${{ secrets.CODEX_REVIEW_REQUEST_TOKEN }}
+          auto-review-push-token: ${{ secrets.AUTO_REVIEW_PUSH_TOKEN }}
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           pr-number: ${{ github.event.issue.number || github.event.pull_request.number }}
           pr-head-ref: ${{ steps.pr.outputs.head_ref }}

@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 
 const initWorkflow = readFileSync(".github/workflows/auto-review-init.yml", "utf8");
 const loopWorkflow = readFileSync(".github/workflows/auto-review-loop.yml", "utf8");
+const loopAction = readFileSync("loop/action.yml", "utf8");
+const postFixAction = readFileSync("loop/post-fix/action.yml", "utf8");
 
 describe("Workflow A trigger guard", () => {
   it("does not start auto-review for fork PRs", () => {
@@ -67,6 +69,14 @@ describe("Workflow B trigger guard", () => {
   it("passes the optional Codex review request token to loop", () => {
     expect(loopWorkflow).toContain("codex-review-request-token:");
     expect(loopWorkflow).toContain("secrets.CODEX_REVIEW_REQUEST_TOKEN");
+  });
+
+  it("passes the optional auto-review push token to loop", () => {
+    expect(loopWorkflow).toContain("auto-review-push-token:");
+    expect(loopWorkflow).toContain("secrets.AUTO_REVIEW_PUSH_TOKEN");
+    expect(loopAction).toContain("auto-review-push-token:");
+    expect(loopAction).toContain("auto-review-push-token: ${{ inputs.auto-review-push-token }}");
+    expect(postFixAction).toContain("auto-review-push-token:");
   });
 
   it("does not compare CODEX_BOT_LOGIN unless the variable is non-empty", () => {

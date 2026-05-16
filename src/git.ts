@@ -104,3 +104,29 @@ export function commit(message: string): void {
 export function push(): void {
   execFileSync("git", ["push"], { stdio: "inherit" });
 }
+
+/**
+ * Push using a temporary origin push URL when `token` is configured.
+ *
+ * GitHub's `GITHUB_TOKEN` pushes do not trigger downstream workflow runs. A
+ * dedicated machine-user PAT or GitHub App token can be supplied here so the
+ * repair commit creates required checks on protected branches.
+ */
+export function pushWithToken(owner: string, repo: string, token: string): void {
+  if (token === "") {
+    push();
+    return;
+  }
+
+  const pushUrl = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
+  execFileSync("git", ["remote", "set-url", "--push", "origin", pushUrl], {
+    stdio: "inherit",
+  });
+  try {
+    push();
+  } finally {
+    execFileSync("git", ["remote", "set-url", "--delete", "--push", "origin", pushUrl], {
+      stdio: "inherit",
+    });
+  }
+}

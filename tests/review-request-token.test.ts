@@ -6,6 +6,7 @@ const ENV_KEYS = [
   "GITHUB_TOKEN",
   "PR_NUMBER",
   "CODEX_REVIEW_REQUEST_TOKEN",
+  "AUTO_REVIEW_PUSH_TOKEN",
 ] as const;
 
 type EnvKey = (typeof ENV_KEYS)[number];
@@ -44,5 +45,16 @@ describe("Codex review request token config", () => {
     process.env.CODEX_REVIEW_REQUEST_TOKEN = "codex-connected-user-token";
     const config = loadInitConfig();
     expect(config.codexReviewRequestToken).toBe("codex-connected-user-token");
+  });
+
+  it("leaves autoReviewPushToken empty when AUTO_REVIEW_PUSH_TOKEN is not set", () => {
+    const config = loadInitConfig();
+    expect(config.autoReviewPushToken).toBe("");
+  });
+
+  it("uses AUTO_REVIEW_PUSH_TOKEN when set", () => {
+    process.env.AUTO_REVIEW_PUSH_TOKEN = "push-token";
+    const config = loadInitConfig();
+    expect(config.autoReviewPushToken).toBe("push-token");
   });
 });

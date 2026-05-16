@@ -9,6 +9,7 @@ export interface Config {
   stabilizeCount: number;
   codexReviewMarker: string;
   codexReviewRequestToken: string;
+  autoReviewPushToken: string;
   anthropicApiKey: string;
   githubToken: string;
   repoOwner: string;
@@ -79,6 +80,7 @@ function loadBaseConfig(): Omit<Config, "anthropicApiKey"> {
     "CODEX_REVIEW_REQUEST_TOKEN",
     githubToken
   );
+  const autoReviewPushToken = input("auto-review-push-token", "AUTO_REVIEW_PUSH_TOKEN", "");
 
   return {
     maxReviewIterations: intInput("max-review-iterations", "MAX_REVIEW_ITERATIONS", 20),
@@ -90,6 +92,7 @@ function loadBaseConfig(): Omit<Config, "anthropicApiKey"> {
     codexReviewMarker: input("codex-review-marker", "CODEX_REVIEW_MARKER", "Codex Review"),
     githubToken,
     codexReviewRequestToken,
+    autoReviewPushToken,
     repoOwner,
     repoName,
     prNumber: requirePositiveInt("pr-number", "PR_NUMBER"),

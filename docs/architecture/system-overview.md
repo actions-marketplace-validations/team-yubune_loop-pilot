@@ -54,6 +54,7 @@ PR #7 / TY-11 で、同一リポジトリ PR に対する Workflow A/B の主要
 | `STABILIZE_COUNT` | コメント数安定と判定する連続一致回数 | `3` | `3` |
 | `CODEX_REVIEW_MARKER` | Codex 総評レビュー/コメントの検知文言 | `Codex Review` | `Codex Review` |
 | `CODEX_REVIEW_REQUEST_TOKEN` | `@codex review` 投稿専用の接続済みユーザー PAT。未設定時は `GITHUB_TOKEN` に fallback | なし | 接続済みユーザーの Fine-grained PAT |
+| `AUTO_REVIEW_PUSH_TOKEN` | repair commit の `git push` 専用 token。required checks を修復コミット上で発火させたい本番 repo では machine user PAT または GitHub App token を設定する。未設定時は従来通り `GITHUB_TOKEN` 相当の push 経路を使う | なし | 未設定 |
 | `AUTO_REVIEW_LABEL` | 起動ラベル名（カスタマイズ用）。デフォルトのラベル必須モードでこのラベルが付いた PR のみ Workflow A/B が起動する。未設定/空文字なら `auto-review-fix` をフォールバック使用（レビュー＋自動修正までを行うため命名は `auto-review-fix`） | `auto-review-fix` | 未設定（フォールバックで `auto-review-fix` を要求） |
 | `AUTO_REVIEW_FULL_AUTO` | `true` を設定すると label gate を無効化し、すべての非 fork ready PR で起動する（完全自動化、PoC 互換挙動） | `false`（ラベル必須） | 未設定（ラベル必須） |
 | `AUTO_REVIEW_AUTO_MERGE` | `true` を設定すると `done / no_findings` 到達時に GitHub native auto-merge (squash) を有効化する（TY-245）。他の停止理由ではマージしない。失敗時は warning のみで人手マージ運用を維持 | `false`（人手マージ） | 未設定（人手マージ） |
@@ -75,7 +76,9 @@ env:
   CODEX_REVIEW_MARKER: ${{ vars.CODEX_REVIEW_MARKER || 'Codex Review' }}
 ```
 
-`CODEX_REVIEW_REQUEST_TOKEN` は GitHub Actions の Repository secrets に設定し、Workflow A/B の action input `codex-review-request-token` として渡す。この token は `@codex review` の投稿だけに使い、hidden comment の状態管理、PR ブランチへの push、Artifact 収集など既存の GitHub 操作は `GITHUB_TOKEN` を使い続ける。
+`CODEX_REVIEW_REQUEST_TOKEN` は GitHub Actions の Repository secrets に設定し、Workflow A/B の action input `codex-review-request-token` として渡す。この token は `@codex review` の投稿だけに使い、hidden comment の状態管理、Artifact 収集など既存の GitHub 操作は `GITHUB_TOKEN` を使い続ける。
+
+`AUTO_REVIEW_PUSH_TOKEN` は repair commit の push だけに使う。branch protection の required checks がある本番 repo では、`GITHUB_TOKEN` push だと修復コミット上の CI が発火しない場合があるため、machine user PAT または GitHub App token を Repository secret として設定する。
 
 ---
 

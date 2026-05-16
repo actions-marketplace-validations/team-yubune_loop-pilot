@@ -19,6 +19,10 @@ inputs:
     description: "Optional token from a Codex-connected user for posting @codex review"
     required: false
     default: ""
+  auto-review-push-token:
+    description: "Optional token used only for repair commit pushes; use a machine-user PAT or GitHub App token when required checks must run on repair commits"
+    required: false
+    default: ""
   anthropic-api-key:
     description: "Anthropic API key for claude-code-action"
     required: true
@@ -184,6 +188,7 @@ runs:
       with:
         github-token: ${{ inputs.github-token }}
         codex-review-request-token: ${{ inputs.codex-review-request-token }}
+        auto-review-push-token: ${{ inputs.auto-review-push-token }}
         pr-number: ${{ inputs.pr-number }}
         pr-head-ref: ${{ steps.pre.outputs.pr_head_ref }}
         pr-title: ${{ inputs.pr-title }}

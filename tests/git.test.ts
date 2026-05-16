@@ -175,4 +175,38 @@ describe("subprocess wrappers", () => {
       { stdio: "inherit" },
     );
   });
+
+  it("pushWithToken falls back to plain push for an empty token", () => {
+    git.pushWithToken("owner", "repo", "");
+    expect(execFileSync).toHaveBeenCalledTimes(1);
+    expect(execFileSync).toHaveBeenCalledWith(
+      "git",
+      ["push"],
+      { stdio: "inherit" },
+    );
+  });
+
+  it("pushWithToken temporarily sets and deletes origin push URL for a token", () => {
+    git.pushWithToken("owner", "repo", "push-token");
+
+    const url = "https://x-access-token:push-token@github.com/owner/repo.git";
+    expect(execFileSync).toHaveBeenNthCalledWith(
+      1,
+      "git",
+      ["remote", "set-url", "--push", "origin", url],
+      { stdio: "inherit" },
+    );
+    expect(execFileSync).toHaveBeenNthCalledWith(
+      2,
+      "git",
+      ["push"],
+      { stdio: "inherit" },
+    );
+    expect(execFileSync).toHaveBeenNthCalledWith(
+      3,
+      "git",
+      ["remote", "set-url", "--delete", "--push", "origin", url],
+      { stdio: "inherit" },
+    );
+  });
 });

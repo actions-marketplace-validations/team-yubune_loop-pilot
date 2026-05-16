@@ -1,4 +1,5 @@
 node_modules/
+.worktrees/
 # Ignore everything under dist/, but re-include the subdirectories that ship as
 # GitHub Actions JS action bundles. Each subdirectory needs its own re-include
 # pattern (parent-directory excludes block child negations otherwise).

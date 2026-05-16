@@ -99,8 +99,8 @@ export interface PostFixDeps {
   hasStagedChanges: () => boolean;
   /** Creates a commit with the supplied message. */
   commit: (message: string) => void;
-  /** Pushes HEAD to the remote tracking branch. */
-  push: () => void;
+  /** Pushes HEAD to the remote tracking branch, optionally using a push token. */
+  push: (owner: string, repo: string, token: string) => void;
   /** Reads the file at `path` as utf-8. Returns null on failure. */
   readActionExecutionFile: (path: string) => string | null;
 }
@@ -125,7 +125,7 @@ const defaultDeps: PostFixDeps = {
   stagePaths: git.stagePaths,
   hasStagedChanges: git.hasStagedChanges,
   commit: git.commit,
-  push: git.push,
+  push: git.pushWithToken,
   readActionExecutionFile: (path) => {
     if (!path) return null;
     try {
@@ -193,6 +193,7 @@ export async function runPostFix(
 ): Promise<void> {
   deps.setSecret(config.githubToken);
   deps.setSecret(config.codexReviewRequestToken);
+  deps.setSecret(config.autoReviewPushToken);
 
   deps.info(
     `[post-fix] Starting post-fix for PR #${config.prNumber}, iteration ${inputs.iteration}, action outcome: ${inputs.actionOutcome}`,
@@ -524,7 +525,7 @@ export async function runPostFix(
     ].join("\n");
     try {
       deps.commit(commitMessage);
-      deps.push();
+      deps.push(config.repoOwner, config.repoName, config.autoReviewPushToken);
     } catch (error) {
       deps.error(
         `[post-fix] commit/push failed: ${error instanceof Error ? error.message : String(error)}`,

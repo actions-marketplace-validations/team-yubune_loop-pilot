@@ -16,6 +16,7 @@ const baseConfig: Config = {
   stabilizeCount: 1,
   codexReviewMarker: "Codex Review",
   codexReviewRequestToken: "codex-token",
+  autoReviewPushToken: "github-token",
   anthropicApiKey: "anthropic-key",
   githubToken: "github-token",
   repoOwner: "team-yubune",

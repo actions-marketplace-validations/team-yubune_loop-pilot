@@ -167,10 +167,10 @@ Observed result:
   PR remained blocked by the required check.
 
 This indicates that using `GITHUB_TOKEN` for the auto-fix push is not sufficient
-when production requires CI to run on the repair commit. Production needs either
-a push credential that triggers workflows, such as a dedicated machine-user PAT
-or GitHub App token, or a deliberate follow-up mechanism that creates the
-required check on the repair commit.
+when production requires CI to run on the repair commit. TY-257 adds
+`AUTO_REVIEW_PUSH_TOKEN` so production can use a dedicated machine-user PAT or
+GitHub App token for the repair commit push while keeping
+`CODEX_REVIEW_REQUEST_TOKEN` limited to `@codex review` requests.
 
 The final Codex re-review on the repair commit was also blocked by Codex usage
 limits, so the public-repo run did not reach a fresh `done / no_findings` state
@@ -198,6 +198,9 @@ Production guidance:
   until those checks report on the repair commit.
 - If `CHECK_COMMAND` differs from the required checks, document which signal is
   authoritative for auto-review completion.
+- If required checks must run on repair commits, configure
+  `AUTO_REVIEW_PUSH_TOKEN` with a non-`GITHUB_TOKEN` actor that can push the PR
+  branch and trigger workflows.
 
 ## Human-Required Items
 

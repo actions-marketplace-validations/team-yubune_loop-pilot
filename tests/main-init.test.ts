@@ -14,6 +14,7 @@ const baseConfig: Config = {
   stabilizeCount: 3,
   codexReviewMarker: "Codex Review",
   codexReviewRequestToken: "codex-token",
+  autoReviewPushToken: "github-token",
   anthropicApiKey: "",
   githubToken: "github-token",
   repoOwner: "team-yubune",
@@ -29,6 +30,7 @@ const baseConfig: Config = {
   autoReviewRestartRoles: "author,write,maintain,admin",
   claudeCodeModelBase: "claude-sonnet-4-6",
   claudeCodeModelEscalated: "claude-opus-4-7",
+  autoMergeOnClean: false,
 };
 
 function makeState(overrides: Partial<ReviewState> = {}): ReviewState {

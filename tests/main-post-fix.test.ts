@@ -18,6 +18,7 @@ const baseConfig: Config = {
   stabilizeCount: 1,
   codexReviewMarker: "Codex Review",
   codexReviewRequestToken: "codex-token",
+  autoReviewPushToken: "",
   anthropicApiKey: "",
   githubToken: "github-token",
   repoOwner: "team-yubune",
@@ -33,6 +34,7 @@ const baseConfig: Config = {
   autoReviewRestartRoles: "author,write,maintain,admin",
   claudeCodeModelBase: "claude-sonnet-4-6",
   claudeCodeModelEscalated: "claude-opus-4-7",
+  autoMergeOnClean: false,
 };
 
 const baseInputs: PostFixInputs = {
@@ -63,7 +65,7 @@ interface DepRecord {
   readonly resetCalls: number;
   readonly stagedPaths: string[][];
   readonly commitMessages: string[];
-  readonly pushCalls: number;
+  readonly pushCalls: Array<{ owner: string; repo: string; token: string }>;
 }
 
 function makeDeps(
@@ -74,7 +76,7 @@ function makeDeps(
     resetCalls: 0,
     stagedPaths: [] as string[][],
     commitMessages: [] as string[],
-    pushCalls: 0,
+    pushCalls: [] as Array<{ owner: string; repo: string; token: string }>,
   };
   const deps: PostFixDeps = {
     readState: vi.fn().mockResolvedValue(readResult),
@@ -102,8 +104,8 @@ function makeDeps(
     commit: (msg) => {
       counters.commitMessages.push(msg);
     },
-    push: () => {
-      counters.pushCalls += 1;
+    push: (owner, repo, token) => {
+      counters.pushCalls.push({ owner, repo, token });
     },
     readActionExecutionFile: () => null,
     ...overrides,
@@ -136,7 +138,9 @@ describe("runPostFix", () => {
 
     expect(deps.stagedPaths).toEqual([["src/foo.ts", "tests/foo.test.ts"]]);
     expect(deps.commitMessages[0]).toContain("(iteration 2)");
-    expect(deps.pushCalls).toBe(1);
+    expect(deps.pushCalls).toEqual([
+      { owner: "team-yubune", repo: "test-auto-ai-review", token: "" },
+    ]);
     expect(deps.postClaudeCodeActionFixSummary).toHaveBeenCalled();
     expect(deps.postCodexReviewRequest).toHaveBeenCalled();
     expect(deps.updateStateComment).toHaveBeenCalledWith(
@@ -280,7 +284,9 @@ describe("runPostFix", () => {
       ["src/foo.ts", "src/new-helper.ts", "tests/new-helper.test.ts"],
     ]);
     expect(deps.commitMessages.length).toBe(1);
-    expect(deps.pushCalls).toBe(1);
+    expect(deps.pushCalls).toEqual([
+      { owner: "team-yubune", repo: "test-auto-ai-review", token: "" },
+    ]);
     // The fix summary surfaces every changed file, not just the tracked subset.
     expect(deps.postClaudeCodeActionFixSummary).toHaveBeenCalledWith(
       "team-yubune",
