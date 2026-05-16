@@ -9,9 +9,9 @@ import { runIfNotVitest } from "./entrypoint.js";
 import { demoteFixingOnCrash } from "./crash-recovery.js";
 import {
   readState as defaultReadState,
-  StateUpdateConflictError,
   updateStateComment as defaultUpdateStateComment,
 } from "./state-manager.js";
+import { createLockedStateUpdater } from "./state-comment-locker.js";
 import { runCheckCommand as defaultRunCheckCommand } from "./check-runner.js";
 import {
   parseGitNumstat,
@@ -271,31 +271,17 @@ export async function runPostFix(
 
   const state = stateResult.state;
   const commentId = stateResult.commentId;
-  let stateCommentUpdatedAt: string | undefined = stateResult.commentUpdatedAt;
 
-  async function updateStateCommentLocked(
-    nextState: ReviewState,
-    detail: string,
-  ): Promise<boolean> {
-    try {
-      const result = await deps.updateStateComment(
-        config.repoOwner,
-        config.repoName,
-        commentId,
-        nextState,
-        config.githubToken,
-        stateCommentUpdatedAt
-          ? { expectedUpdatedAt: stateCommentUpdatedAt }
-          : undefined,
-      );
-      stateCommentUpdatedAt = result.updatedAt;
-      return true;
-    } catch (error) {
-      if (!(error instanceof StateUpdateConflictError)) {
-        throw error;
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      deps.warning(`[post-fix] Hidden comment state conflict. ${message}`);
+  const updateStateCommentLocked = createLockedStateUpdater({
+    owner: config.repoOwner,
+    repo: config.repoName,
+    commentId,
+    token: config.githubToken,
+    initialExpectedUpdatedAt: stateResult.commentUpdatedAt,
+    label: "post-fix",
+    updateStateComment: deps.updateStateComment,
+    warning: deps.warning,
+    onConflict: async (detail) => {
       await deps.postStopComment(
         config.repoOwner,
         config.repoName,
@@ -306,9 +292,8 @@ export async function runPostFix(
         `${detail} Hidden comment was updated by another workflow run before this run could safely persist its state.`,
         config.githubToken,
       );
-      return false;
-    }
-  }
+    },
+  });
 
   async function failureExit(opts: FailureExitOptions): Promise<void> {
     const previousCheckFailure =

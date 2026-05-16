@@ -19529,6 +19529,26 @@ async function demoteFixingOnCrash(label, deps = defaultDeps) {
   }
 }
 
+// dist/state-comment-locker.js
+function createLockedStateUpdater(args) {
+  let expectedUpdatedAt = args.initialExpectedUpdatedAt;
+  return async function tryUpdate(nextState, detail) {
+    try {
+      const result = await args.updateStateComment(args.owner, args.repo, args.commentId, nextState, args.token, expectedUpdatedAt ? { expectedUpdatedAt } : void 0);
+      expectedUpdatedAt = result.updatedAt;
+      return true;
+    } catch (error2) {
+      if (!(error2 instanceof StateUpdateConflictError)) {
+        throw error2;
+      }
+      const message = error2 instanceof Error ? error2.message : String(error2);
+      args.warning(`[${args.label}] Hidden comment state conflict. ${message}`);
+      await args.onConflict(detail);
+      return false;
+    }
+  };
+}
+
 // dist/review-collector.js
 var import_node_child_process2 = require("node:child_process");
 var import_node_util2 = require("node:util");
@@ -20301,21 +20321,21 @@ async function runPreFix(config, deps = defaultDeps2) {
     }
   }
   const stateResult = await deps.readState(config.repoOwner, config.repoName, config.prNumber, config.githubToken);
-  let stateCommentUpdatedAt = stateResult.found || stateResult.corrupted ? stateResult.commentUpdatedAt : void 0;
-  async function updateStateCommentLocked(targetCommentId, nextState, detail) {
-    try {
-      const result = await deps.updateStateComment(config.repoOwner, config.repoName, targetCommentId, nextState, config.githubToken, stateCommentUpdatedAt ? { expectedUpdatedAt: stateCommentUpdatedAt } : void 0);
-      stateCommentUpdatedAt = result.updatedAt;
-      return true;
-    } catch (error2) {
-      if (!(error2 instanceof StateUpdateConflictError)) {
-        throw error2;
+  const stateCommentUpdatedAt = stateResult.found || stateResult.corrupted ? stateResult.commentUpdatedAt : void 0;
+  function makeLockedUpdater(targetCommentId) {
+    return createLockedStateUpdater({
+      owner: config.repoOwner,
+      repo: config.repoName,
+      commentId: targetCommentId,
+      token: config.githubToken,
+      initialExpectedUpdatedAt: stateCommentUpdatedAt,
+      label: "pre-fix",
+      updateStateComment: deps.updateStateComment,
+      warning: deps.warning,
+      onConflict: async (detail) => {
+        await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, "state_conflict", triggerCommentId, 0, `${detail} Hidden comment was updated by another workflow run before this run could safely persist its state. Re-run after the active workflow finishes if needed.`, config.githubToken);
       }
-      const message = error2 instanceof Error ? error2.message : String(error2);
-      deps.warning(`[pre-fix] Hidden comment state conflict. ${message}`);
-      await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, "state_conflict", triggerCommentId, 0, `${detail} Hidden comment was updated by another workflow run before this run could safely persist its state. Re-run after the active workflow finishes if needed.`, config.githubToken);
-      return false;
-    }
+    });
   }
   if (isCommandTrigger) {
     const restartResult = await deps.handleRestartCommand({
@@ -20346,7 +20366,7 @@ async function runPreFix(config, deps = defaultDeps2) {
         status: "stopped",
         stopReason: "state_corrupted"
       };
-      if (!await updateStateCommentLocked(stateResult.commentId, corruptedState, "Could not mark corrupted hidden state as stopped."))
+      if (!await makeLockedUpdater(stateResult.commentId)(corruptedState, "Could not mark corrupted hidden state as stopped."))
         return;
     }
     await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, "state_corrupted", triggerCommentId, 0, "Hidden comment state JSON is corrupted. Manual re-initialization required.", config.githubToken);
@@ -20357,6 +20377,7 @@ async function runPreFix(config, deps = defaultDeps2) {
   }
   const { state } = stateResult;
   const { commentId } = stateResult;
+  const updateStateCommentLocked = makeLockedUpdater(commentId);
   if (state.status === "initialized") {
     deps.info("[pre-fix] State is 'initialized' \u2014 Workflow A incomplete.");
     await deps.postInitIncompleteComment(config.repoOwner, config.repoName, config.prNumber, config.githubToken);
@@ -20383,7 +20404,7 @@ async function runPreFix(config, deps = defaultDeps2) {
       status: "stopped",
       stopReason: "state_corrupted"
     };
-    if (!await updateStateCommentLocked(commentId, recoveredState, "Could not recover stale fixing state."))
+    if (!await updateStateCommentLocked(recoveredState, "Could not recover stale fixing state."))
       return;
     await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, "state_corrupted", triggerCommentId, 0, "Previous fixing state timed out \u2014 recovered automatically", config.githubToken);
     return;
@@ -20404,7 +20425,7 @@ async function runPreFix(config, deps = defaultDeps2) {
       status: "stopped",
       stopReason: "codex_usage_limit"
     };
-    if (!await updateStateCommentLocked(commentId, stoppedState, "Could not stop after detecting Codex usage limit."))
+    if (!await updateStateCommentLocked(stoppedState, "Could not stop after detecting Codex usage limit."))
       return;
     await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, "codex_usage_limit", triggerCommentId, 0, "Codex replied with a usage-limit notice instead of a review. Wait for quota to reset (or upgrade), then run /restart-review.", config.githubToken);
     return;
@@ -20439,7 +20460,7 @@ async function runPreFix(config, deps = defaultDeps2) {
       status: "done",
       stopReason: "no_findings"
     };
-    if (!await updateStateCommentLocked(commentId, doneState, "Could not mark auto-review as done."))
+    if (!await updateStateCommentLocked(doneState, "Could not mark auto-review as done."))
       return;
     await deps.postCompletionComment(config.repoOwner, config.repoName, config.prNumber, doneState.iterationCount, config.githubToken);
     if (config.autoMergeOnClean) {
@@ -20454,7 +20475,7 @@ async function runPreFix(config, deps = defaultDeps2) {
       status: "stopped",
       stopReason: "max_iterations"
     };
-    if (!await updateStateCommentLocked(commentId, stoppedState, "Could not stop after reaching the max iteration limit."))
+    if (!await updateStateCommentLocked(stoppedState, "Could not stop after reaching the max iteration limit."))
       return;
     await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, "max_iterations", triggerCommentId, findings.length, `Reached MAX_REVIEW_ITERATIONS (${config.maxReviewIterations})`, config.githubToken);
     return;
@@ -20466,7 +20487,7 @@ async function runPreFix(config, deps = defaultDeps2) {
       status: "stopped",
       stopReason: "loop_detected"
     };
-    if (!await updateStateCommentLocked(commentId, stoppedState, "Could not stop after detecting a findings loop."))
+    if (!await updateStateCommentLocked(stoppedState, "Could not stop after detecting a findings loop."))
       return;
     await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, "loop_detected", triggerCommentId, findings.length, "Same findings hash detected in previous iteration", config.githubToken);
     return;
@@ -20494,7 +20515,7 @@ async function runPreFix(config, deps = defaultDeps2) {
     lastFindingsHash: currentHash,
     findingsHashHistory: updatedHashHistory
   };
-  if (!await updateStateCommentLocked(commentId, fixingState, "Could not claim the hidden comment state for fixing."))
+  if (!await updateStateCommentLocked(fixingState, "Could not claim the hidden comment state for fixing."))
     return;
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._\-/]*$/.test(prHeadRef) || prHeadRef.includes("..")) {
     throw new Error(`[pre-fix] Invalid branch name: ${prHeadRef}`);

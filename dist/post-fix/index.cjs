@@ -19473,6 +19473,26 @@ async function demoteFixingOnCrash(label, deps = defaultDeps) {
   }
 }
 
+// dist/state-comment-locker.js
+function createLockedStateUpdater(args) {
+  let expectedUpdatedAt = args.initialExpectedUpdatedAt;
+  return async function tryUpdate(nextState, detail) {
+    try {
+      const result = await args.updateStateComment(args.owner, args.repo, args.commentId, nextState, args.token, expectedUpdatedAt ? { expectedUpdatedAt } : void 0);
+      expectedUpdatedAt = result.updatedAt;
+      return true;
+    } catch (error2) {
+      if (!(error2 instanceof StateUpdateConflictError)) {
+        throw error2;
+      }
+      const message = error2 instanceof Error ? error2.message : String(error2);
+      args.warning(`[${args.label}] Hidden comment state conflict. ${message}`);
+      await args.onConflict(detail);
+      return false;
+    }
+  };
+}
+
 // dist/check-runner.js
 var import_node_child_process2 = require("node:child_process");
 var import_node_util2 = require("node:util");
@@ -19882,22 +19902,19 @@ async function runPostFix(config, deps = defaultDeps2, inputs = readPostFixInput
   }
   const state = stateResult.state;
   const commentId = stateResult.commentId;
-  let stateCommentUpdatedAt = stateResult.commentUpdatedAt;
-  async function updateStateCommentLocked(nextState, detail) {
-    try {
-      const result = await deps.updateStateComment(config.repoOwner, config.repoName, commentId, nextState, config.githubToken, stateCommentUpdatedAt ? { expectedUpdatedAt: stateCommentUpdatedAt } : void 0);
-      stateCommentUpdatedAt = result.updatedAt;
-      return true;
-    } catch (error2) {
-      if (!(error2 instanceof StateUpdateConflictError)) {
-        throw error2;
-      }
-      const message = error2 instanceof Error ? error2.message : String(error2);
-      deps.warning(`[post-fix] Hidden comment state conflict. ${message}`);
+  const updateStateCommentLocked = createLockedStateUpdater({
+    owner: config.repoOwner,
+    repo: config.repoName,
+    commentId,
+    token: config.githubToken,
+    initialExpectedUpdatedAt: stateResult.commentUpdatedAt,
+    label: "post-fix",
+    updateStateComment: deps.updateStateComment,
+    warning: deps.warning,
+    onConflict: async (detail) => {
       await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, "state_conflict", inputs.triggerCommentId, 0, `${detail} Hidden comment was updated by another workflow run before this run could safely persist its state.`, config.githubToken);
-      return false;
     }
-  }
+  });
   async function failureExit(opts) {
     const previousCheckFailure = opts.preservePreviousCheckFailure && opts.postCheckFailureBody ? truncatePreviousCheckFailure(opts.postCheckFailureBody) : null;
     const rolledBackHistory = opts.state.findingsHashHistory.slice(0, -1);

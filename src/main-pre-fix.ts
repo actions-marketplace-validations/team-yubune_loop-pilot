@@ -10,9 +10,9 @@ import { demoteFixingOnCrash } from "./crash-recovery.js";
 import {
   createInitialState,
   readState as defaultReadState,
-  StateUpdateConflictError,
   updateStateComment as defaultUpdateStateComment,
 } from "./state-manager.js";
+import { createLockedStateUpdater } from "./state-comment-locker.js";
 import {
   fetchReviewComments as defaultFetchReviewComments,
   filterAndParseComments,
@@ -191,47 +191,34 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
     config.prNumber,
     config.githubToken,
   );
-  let stateCommentUpdatedAt =
+  const stateCommentUpdatedAt =
     stateResult.found || stateResult.corrupted
       ? stateResult.commentUpdatedAt
       : undefined;
 
-  async function updateStateCommentLocked(
-    targetCommentId: number,
-    nextState: ReviewState,
-    detail: string,
-  ): Promise<boolean> {
-    try {
-      const result = await deps.updateStateComment(
-        config.repoOwner,
-        config.repoName,
-        targetCommentId,
-        nextState,
-        config.githubToken,
-        stateCommentUpdatedAt
-          ? { expectedUpdatedAt: stateCommentUpdatedAt }
-          : undefined,
-      );
-      stateCommentUpdatedAt = result.updatedAt;
-      return true;
-    } catch (error) {
-      if (!(error instanceof StateUpdateConflictError)) {
-        throw error;
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      deps.warning(`[pre-fix] Hidden comment state conflict. ${message}`);
-      await deps.postStopComment(
-        config.repoOwner,
-        config.repoName,
-        config.prNumber,
-        "state_conflict",
-        triggerCommentId,
-        0,
-        `${detail} Hidden comment was updated by another workflow run before this run could safely persist its state. Re-run after the active workflow finishes if needed.`,
-        config.githubToken,
-      );
-      return false;
-    }
+  function makeLockedUpdater(targetCommentId: number) {
+    return createLockedStateUpdater({
+      owner: config.repoOwner,
+      repo: config.repoName,
+      commentId: targetCommentId,
+      token: config.githubToken,
+      initialExpectedUpdatedAt: stateCommentUpdatedAt,
+      label: "pre-fix",
+      updateStateComment: deps.updateStateComment,
+      warning: deps.warning,
+      onConflict: async (detail) => {
+        await deps.postStopComment(
+          config.repoOwner,
+          config.repoName,
+          config.prNumber,
+          "state_conflict",
+          triggerCommentId,
+          0,
+          `${detail} Hidden comment was updated by another workflow run before this run could safely persist its state. Re-run after the active workflow finishes if needed.`,
+          config.githubToken,
+        );
+      },
+    });
   }
 
   if (isCommandTrigger) {
@@ -266,8 +253,7 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
         stopReason: "state_corrupted",
       };
       if (
-        !(await updateStateCommentLocked(
-          stateResult.commentId,
+        !(await makeLockedUpdater(stateResult.commentId)(
           corruptedState,
           "Could not mark corrupted hidden state as stopped.",
         ))
@@ -292,6 +278,7 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
   }
   const { state } = stateResult;
   const { commentId } = stateResult;
+  const updateStateCommentLocked = makeLockedUpdater(commentId);
 
   if (state.status === "initialized") {
     deps.info("[pre-fix] State is 'initialized' — Workflow A incomplete.");
@@ -338,7 +325,6 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
     };
     if (
       !(await updateStateCommentLocked(
-        commentId,
         recoveredState,
         "Could not recover stale fixing state.",
       ))
@@ -394,7 +380,6 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
     };
     if (
       !(await updateStateCommentLocked(
-        commentId,
         stoppedState,
         "Could not stop after detecting Codex usage limit.",
       ))
@@ -474,7 +459,6 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
     };
     if (
       !(await updateStateCommentLocked(
-        commentId,
         doneState,
         "Could not mark auto-review as done.",
       ))
@@ -510,7 +494,6 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
     };
     if (
       !(await updateStateCommentLocked(
-        commentId,
         stoppedState,
         "Could not stop after reaching the max iteration limit.",
       ))
@@ -538,7 +521,6 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
     };
     if (
       !(await updateStateCommentLocked(
-        commentId,
         stoppedState,
         "Could not stop after detecting a findings loop.",
       ))
@@ -602,7 +584,6 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
   };
   if (
     !(await updateStateCommentLocked(
-      commentId,
       fixingState,
       "Could not claim the hidden comment state for fixing.",
     ))
