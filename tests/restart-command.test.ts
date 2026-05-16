@@ -59,17 +59,21 @@ describe("parseRestartCommand", () => {
 });
 
 describe("applyRestartToState", () => {
-  it("soft-restarts done(no_findings), preserving counters and the review timestamp baseline", () => {
+  it("soft-restarts done(no_findings), preserving counters, timestamp baseline, and stopReason (TY-258)", () => {
     const state = makeState();
 
     const result = applyRestartToState(state, "soft", 45678);
 
+    // TY-258: stopReason is now preserved across restart so pre-fix can read
+    // `state.stopReason === "max_turns_exceeded"` on the next iteration.
+    // Post-fix clears it on the next clean-commit transition to
+    // `waiting_codex` (one-shot).
     expect(result).toEqual({
       ok: true,
       nextState: {
         ...state,
         status: "waiting_codex",
-        stopReason: null,
+        stopReason: "no_findings",
         lastProcessedReviewId: null,
         lastCodexRequestCommentId: 45678,
       },
@@ -77,7 +81,7 @@ describe("applyRestartToState", () => {
     });
   });
 
-  it("hard-restarts by clearing iteration count and findings history", () => {
+  it("hard-restarts by clearing iteration count and findings history but preserves stopReason (TY-258)", () => {
     const state = makeState();
 
     const result = applyRestartToState(state, "hard", 45678);
@@ -85,12 +89,32 @@ describe("applyRestartToState", () => {
     expect(result.ok).toBe(true);
     expect(result.nextState).toMatchObject({
       status: "waiting_codex",
-      stopReason: null,
+      // TY-258: stopReason persists across both soft and hard restart so
+      // operators can force a fresh iteration count without losing the
+      // signal that the last attempt hit `max_turns_exceeded`.
+      stopReason: "no_findings",
       iterationCount: 0,
       findingsHashHistory: [],
       lastFindingsHash: null,
       lastProcessedReviewId: null,
       lastCodexReviewReceivedAt: state.lastCodexReviewReceivedAt,
+      lastCodexRequestCommentId: 45678,
+    });
+  });
+
+  it("preserves max_turns_exceeded stopReason across soft restart so pre-fix escalates (TY-258)", () => {
+    const state = makeState({
+      status: "stopped",
+      stopReason: "max_turns_exceeded",
+    });
+
+    const result = applyRestartToState(state, "soft", 45678);
+
+    expect(result.ok).toBe(true);
+    expect(result.nextState).toMatchObject({
+      status: "waiting_codex",
+      stopReason: "max_turns_exceeded",
+      lastProcessedReviewId: null,
       lastCodexRequestCommentId: 45678,
     });
   });
@@ -164,7 +188,8 @@ describe("handleRestartCommand", () => {
       {
         ...state,
         status: "waiting_codex",
-        stopReason: null,
+        // TY-258: stopReason persists across restart.
+        stopReason: "no_findings",
         lastProcessedReviewId: null,
         lastCodexRequestCommentId: null,
       },
@@ -184,7 +209,7 @@ describe("handleRestartCommand", () => {
       {
         ...state,
         status: "waiting_codex",
-        stopReason: null,
+        stopReason: "no_findings",
         lastProcessedReviewId: null,
         lastCodexRequestCommentId: 45678,
       },
@@ -235,6 +260,7 @@ describe("handleRestartCommand", () => {
 
     expect(deps.updateStateComment.mock.calls[1][3]).toMatchObject({
       status: "waiting_codex",
+      // Source state has stopReason: null (waiting_codex), so it stays null.
       stopReason: null,
       iterationCount: 0,
       findingsHashHistory: [],
@@ -269,7 +295,8 @@ describe("handleRestartCommand", () => {
 
     expect(deps.updateStateComment.mock.calls[1][3]).toMatchObject({
       status: "waiting_codex",
-      stopReason: null,
+      // TY-258: stopReason carries through restart for tier escalation.
+      stopReason: "test_failure",
       lastCodexReviewReceivedAt: "2026-05-07T12:34:56Z",
       lastProcessedReviewId: null,
       lastCodexRequestCommentId: 45678,
@@ -337,6 +364,7 @@ describe("handleRestartCommand", () => {
     );
     expect(deps.updateStateComment.mock.calls[1][3]).toMatchObject({
       status: "waiting_codex",
+      // Source state had stopReason: null (fixing); hard restart keeps null.
       stopReason: null,
       iterationCount: 0,
       findingsHashHistory: [],

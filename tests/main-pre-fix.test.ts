@@ -567,6 +567,75 @@ describe("runPreFix", () => {
     );
   });
 
+  it("escalates to the escalated tier when the previous iteration stopped with max_turns_exceeded (TY-258)", async () => {
+    const findings: RawReviewComment[] = [
+      {
+        id: 520,
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body: "P2 Minor follow-up\n\nA wording tweak.",
+        path: "src/foo.ts",
+        line: 12,
+        createdAt: "2026-05-14T11:30:00Z",
+      },
+    ];
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({
+          status: "waiting_codex",
+          iterationCount: 1,
+          // Simulates the state after a `max_turns_exceeded` stop +
+          // `/restart-review` (restart preserves stopReason).
+          stopReason: "max_turns_exceeded",
+        }),
+      },
+      findings,
+    );
+
+    await runPreFix(baseConfig, deps);
+
+    expect(deps.outputs.should_run).toBe("true");
+    // Only P2 finding → no P0 / previousCheckFailure / repeatedFinding,
+    // so the escalation must come solely from the carried-over stopReason.
+    expect(deps.outputs.model).toBe("claude-opus-4-7");
+  });
+
+  it("does not escalate when previous stopReason is a non-max_turns reason (TY-258 boundary)", async () => {
+    const findings: RawReviewComment[] = [
+      {
+        id: 521,
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body: "P2 Minor follow-up\n\nA wording tweak.",
+        path: "src/foo.ts",
+        line: 12,
+        createdAt: "2026-05-14T11:30:00Z",
+      },
+    ];
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({
+          status: "waiting_codex",
+          iterationCount: 1,
+          // Any non-max_turns reason must not trigger escalation on its own.
+          stopReason: "loop_detected",
+        }),
+      },
+      findings,
+    );
+
+    await runPreFix(baseConfig, deps);
+
+    expect(deps.outputs.should_run).toBe("true");
+    expect(deps.outputs.model).toBe("claude-sonnet-4-6");
+  });
+
   it("stops with codex_usage_limit when the Codex bot trigger body is a usage-limit notice (TY-229)", async () => {
     const usageLimitBody = "You have reached your Codex usage limits for code reviews.";
     const deps = makeDeps({

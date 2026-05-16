@@ -16,6 +16,7 @@ const defaultInput = {
   findings: [],
   previousCheckFailure: null,
   repeatedFinding: false,
+  previousMaxTurnsExceeded: false,
 };
 
 describe("selectModel", () => {
@@ -99,12 +100,36 @@ describe("selectModel", () => {
     });
   });
 
-  it("lists all three escalation reasons when all signals fire together", () => {
+  it("escalates with previous_max_turns_exceeded when previousMaxTurnsExceeded is true (TY-258)", () => {
+    const result = selectModel({
+      ...defaultInput,
+      findings: [finding("P2")],
+      previousMaxTurnsExceeded: true,
+    });
+    expect(result).toEqual({
+      model: "claude-opus-4-7",
+      tier: "escalated",
+      escalationReasons: ["previous_max_turns_exceeded"],
+    });
+  });
+
+  it("does not escalate from this signal when previousMaxTurnsExceeded is false (TY-258)", () => {
+    const result = selectModel({
+      ...defaultInput,
+      findings: [finding("P1"), finding("P2")],
+      previousMaxTurnsExceeded: false,
+    });
+    expect(result.tier).toBe("base");
+    expect(result.escalationReasons).not.toContain("previous_max_turns_exceeded");
+  });
+
+  it("lists all four escalation reasons when every signal fires together (TY-258)", () => {
     const result = selectModel({
       ...defaultInput,
       findings: [finding("P0")],
       previousCheckFailure: "tsc failed",
       repeatedFinding: true,
+      previousMaxTurnsExceeded: true,
     });
     expect(result).toEqual({
       model: "claude-opus-4-7",
@@ -113,6 +138,7 @@ describe("selectModel", () => {
         "p0_finding",
         "previous_check_failure",
         "repeated_finding",
+        "previous_max_turns_exceeded",
       ],
     });
   });

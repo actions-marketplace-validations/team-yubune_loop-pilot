@@ -99,6 +99,7 @@ soft restart。state を `waiting_codex` に戻し、同じ run で `@codex revi
 - `manual_stop`
 - `max_iterations`（`--hard` 推奨）
 - `loop_detected`（`--hard` 推奨）
+- `max_turns_exceeded`（soft 推奨。次 iteration が自動で escalated tier になる、TY-258）
 - `no_findings`（`done` 状態）
 - `waiting_codex`
 
@@ -108,11 +109,11 @@ soft restart。state を `waiting_codex` に戻し、同じ run で `@codex revi
 - `findingsHashHistory`
 - `lastClaudeCommitSha`
 - `lastFindingsHash`
+- `stopReason` (TY-258 で変更。次 iteration のモデル選定 [`previous_max_turns_exceeded`](security.md#escalation-条件-いずれかが真で-escalated-tier) で参照する。post-fix の clean commit で `null` にリセット)
 
 書き換える状態:
 
 - `status`: `stopped` または `done` → `waiting_codex`
-- `stopReason`: 対象停止理由 → `null`
 - `lastProcessedReviewId`: `null`
 - `lastCodexReviewReceivedAt`: 保持する（過去の Codex inline comment を再処理しないため）
 - `lastCodexRequestCommentId`: 新しく投稿した `@codex review` comment ID
@@ -121,7 +122,7 @@ soft restart。state を `waiting_codex` に戻し、同じ run で `@codex revi
 /restart-review --hard
 ```
 
-hard restart。soft restart の操作に加えて、`iterationCount` を `0`、`findingsHashHistory` を `[]`、`lastFindingsHash` を `null` に戻す。
+hard restart。soft restart の操作に加えて、`iterationCount` を `0`、`findingsHashHistory` を `[]`、`lastFindingsHash` を `null` に戻す。`stopReason` の扱いは soft restart と同じく保持する。
 
 `max_iterations` は上限判定を抜けるために hard restart が適している。`loop_detected` は履歴を消すため、人間が修正済みであることを確認してから使う。
 
@@ -150,6 +151,7 @@ hard restart。soft restart の操作に加えて、`iterationCount` を `0`、`
 - `done(no_findings)` 後に同じ PR を再度レビュー・修正ループにかけたい場合: `/restart-review`
 - `fixing` のまま停止している場合: 実行中の Workflow B がないことを確認してから `/restart-review --hard`
 - `codex_usage_limit` で停止した場合: Codex 側の quota がリセットされたタイミングで `/restart-review` (soft)。`iterationCount` は保持される
+- `max_turns_exceeded` で停止した場合: `/restart-review` (soft) で再開する。次 iteration は自動で escalated tier (default Opus) に上がる (`previous_max_turns_exceeded`、TY-258)。1 回 clean commit に到達すると `stopReason` がクリアされ通常 tiering に戻る (one-shot)
 
 ### `state_corrupted` の手動復旧
 

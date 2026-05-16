@@ -405,6 +405,10 @@ export async function runPostFix(
     const waitingState: ReviewState = {
       ...state,
       status: "waiting_codex",
+      // TY-258: clear any `max_turns_exceeded` (or other) stop reason carried
+      // over from a previous stop + `/restart-review`, so escalation stays
+      // one-shot once the action finishes without an error outcome.
+      stopReason: null,
       previousCheckFailure: null,
     };
     if (
@@ -562,6 +566,11 @@ export async function runPostFix(
     ...state,
     status: "waiting_codex",
     lastClaudeCommitSha: commitSha || state.lastClaudeCommitSha,
+    // TY-258: clear any `max_turns_exceeded` (or other) stop reason carried
+    // over from a previous stop + `/restart-review`. A successful repair
+    // means the escalation signal has done its job and the next iteration
+    // should fall back to normal tiering (one-shot escalation).
+    stopReason: null,
     previousCheckFailure: null,
   };
   if (

@@ -207,8 +207,9 @@ HTTP 403: Upgrade to GitHub Pro or make this repository public to enable this fe
 1. **P0 finding が存在する** — `severity-parser` が P0 と判定した finding が今回 iteration の対象に 1 件以上含まれる
 2. **直前 iteration の CHECK_COMMAND が失敗していた** — `state.previousCheckFailure !== null` (post-fix が CHECK_COMMAND 失敗時に保存する tail)
 3. **直前 iteration の findings hash と完全一致 (TY-243)** — `findingsHashHistory` の最新 entry が `modelTier: "base"` でかつ今回の hash と等しい場合、`isLoop` は `false` を返してこの iteration を escalated tier で再試行させる (`repeated_finding`)。最新 entry が `modelTier: "escalated"` のときに hash 一致が再発した場合、または「直近より前の」 entry と一致した場合 (oscillation) は `loop_detected` で停止する
+4. **直前 iteration が `max_turns_exceeded` で停止していた (TY-258)** — `state.stopReason === "max_turns_exceeded"` を `previousMaxTurnsExceeded` として `selectModel` に渡し、escalated tier (`previous_max_turns_exceeded`) を選ぶ。`/restart-review` は `stopReason` をクリアせず保持する。次に clean commit (status: waiting_codex 遷移) に到達したタイミングで post-fix が `stopReason: null` に戻すため、escalation は **one-shot** で次 iteration からは通常 tiering に戻る
 
-選定ロジックは `src/model-selector.ts` に集約。決定的 (deterministic) で I/O 副作用なし、`tests/model-selector.test.ts` で 3 つの escalation reason を網羅。
+選定ロジックは `src/model-selector.ts` に集約。決定的 (deterministic) で I/O 副作用なし、`tests/model-selector.test.ts` で 4 つの escalation reason を網羅。
 
 #### 選定理由
 
@@ -221,7 +222,7 @@ HTTP 403: Upgrade to GitHub Pro or make this repository public to enable this fe
 pre-fix は選定結果を 1 行ログに出す。例:
 
 ```
-[pre-fix] Model tier=escalated model=claude-opus-4-7 reasons=p0_finding,previous_check_failure,repeated_finding
+[pre-fix] Model tier=escalated model=claude-opus-4-7 reasons=p0_finding,previous_check_failure,repeated_finding,previous_max_turns_exceeded
 ```
 
 base tier 選定時は `reasons=` 部分が省略される。

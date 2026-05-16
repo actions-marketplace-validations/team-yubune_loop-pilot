@@ -76,10 +76,15 @@ export function applyRestartToState(
     return { ok: false, reason: "unsupported_status" };
   }
 
+  // TY-258: `stopReason` is intentionally *not* cleared here. Pre-fix reads
+  // `state.stopReason === "max_turns_exceeded"` to force the escalated tier
+  // on the next iteration; clearing it would defeat that signal. Post-fix
+  // clears `stopReason` on the next clean-commit transition to
+  // `waiting_codex`, so a single successful repair returns the state to
+  // normal tiering (one-shot escalation).
   const nextState: ReviewState = {
     ...state,
     status: "waiting_codex",
-    stopReason: null,
     lastProcessedReviewId: null,
     lastCodexRequestCommentId: reviewRequestCommentId,
   };

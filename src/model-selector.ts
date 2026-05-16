@@ -3,7 +3,8 @@ import type { Finding } from "./types.js";
 export type EscalationReason =
   | "p0_finding"
   | "previous_check_failure"
-  | "repeated_finding";
+  | "repeated_finding"
+  | "previous_max_turns_exceeded";
 
 export type ModelTier = "base" | "escalated";
 
@@ -22,6 +23,14 @@ export interface ModelSelectionInput {
    * `findingsHashHistory`; `selectModel` stays a pure function.
    */
   repeatedFinding: boolean;
+  /**
+   * True when the previous iteration stopped with `stopReason:
+   * "max_turns_exceeded"` (TY-258). Signals that the base tier could not fit
+   * the repair within `--max-turns`, so retry once at the escalated tier.
+   * Cleared on the first clean-commit transition to `waiting_codex`
+   * (one-shot).
+   */
+  previousMaxTurnsExceeded: boolean;
 }
 
 export interface ModelSelection {
@@ -40,6 +49,9 @@ export function selectModel(input: ModelSelectionInput): ModelSelection {
   }
   if (input.repeatedFinding) {
     reasons.push("repeated_finding");
+  }
+  if (input.previousMaxTurnsExceeded) {
+    reasons.push("previous_max_turns_exceeded");
   }
 
   if (reasons.length > 0) {

@@ -149,8 +149,38 @@ describe("runPostFix", () => {
       100,
       expect.objectContaining({
         status: "waiting_codex",
+        // TY-258: clean commit clears stopReason so escalation is one-shot.
+        stopReason: null,
         previousCheckFailure: null,
         lastClaudeCommitSha: "abc1234",
+      }),
+      "github-token",
+      expect.any(Object),
+    );
+  });
+
+  it("clears max_turns_exceeded stopReason carried over from /restart-review on a clean commit (TY-258)", async () => {
+    const deps = makeDeps({
+      found: true,
+      corrupted: false,
+      commentId: 100,
+      commentUpdatedAt: "2026-05-14T12:00:00Z",
+      // Simulates the state right after pre-fix transitions from
+      // `waiting_codex(stopReason: max_turns_exceeded)` to `fixing` —
+      // `stopReason` is intentionally carried through `applyRestartToState`
+      // and only cleared once a successful repair lands.
+      state: makeState({ stopReason: "max_turns_exceeded" }),
+    });
+
+    await runPostFix(baseConfig, deps, baseInputs);
+
+    expect(deps.updateStateComment).toHaveBeenCalledWith(
+      "team-yubune",
+      "test-auto-ai-review",
+      100,
+      expect.objectContaining({
+        status: "waiting_codex",
+        stopReason: null,
       }),
       "github-token",
       expect.any(Object),

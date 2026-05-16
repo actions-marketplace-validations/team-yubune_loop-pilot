@@ -20329,6 +20329,10 @@ async function runPostFix(config, deps = defaultDeps3, inputs = readPostFixInput
     const waitingState2 = {
       ...state,
       status: "waiting_codex",
+      // TY-258: clear any `max_turns_exceeded` (or other) stop reason carried
+      // over from a previous stop + `/restart-review`, so escalation stays
+      // one-shot once the action finishes without an error outcome.
+      stopReason: null,
       previousCheckFailure: null
     };
     if (!await updateStateCommentLocked(waitingState2, "Could not return state to waiting_codex after no-op claude-code-action run.")) {
@@ -20432,6 +20436,11 @@ async function runPostFix(config, deps = defaultDeps3, inputs = readPostFixInput
     ...state,
     status: "waiting_codex",
     lastClaudeCommitSha: commitSha || state.lastClaudeCommitSha,
+    // TY-258: clear any `max_turns_exceeded` (or other) stop reason carried
+    // over from a previous stop + `/restart-review`. A successful repair
+    // means the escalation signal has done its job and the next iteration
+    // should fall back to normal tiering (one-shot escalation).
+    stopReason: null,
     previousCheckFailure: null
   };
   if (!await updateStateCommentLocked(waitingState, "Could not return state to waiting_codex after committing fixes.")) {

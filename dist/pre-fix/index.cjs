@@ -20231,7 +20231,6 @@ function applyRestartToState(state, mode, reviewRequestCommentId) {
   const nextState = {
     ...state,
     status: "waiting_codex",
-    stopReason: null,
     lastProcessedReviewId: null,
     lastCodexRequestCommentId: reviewRequestCommentId
   };
@@ -20581,6 +20580,9 @@ function selectModel(input2) {
   if (input2.repeatedFinding) {
     reasons.push("repeated_finding");
   }
+  if (input2.previousMaxTurnsExceeded) {
+    reasons.push("previous_max_turns_exceeded");
+  }
   if (reasons.length > 0) {
     return {
       model: input2.escalatedModel,
@@ -20837,12 +20839,14 @@ async function runPreFix(config, deps = defaultDeps3) {
   const newIteration = state.iterationCount + 1;
   const previousEntry = state.findingsHashHistory.length > 0 ? state.findingsHashHistory[state.findingsHashHistory.length - 1] : null;
   const repeatedFinding = previousEntry !== null && previousEntry.hash === currentHash && (previousEntry.modelTier ?? "escalated") === "base";
+  const previousMaxTurnsExceeded = state.stopReason === "max_turns_exceeded";
   const selection = selectModel({
     baseModel: config.claudeCodeModelBase,
     escalatedModel: config.claudeCodeModelEscalated,
     findings,
     previousCheckFailure: state.previousCheckFailure ?? null,
-    repeatedFinding
+    repeatedFinding,
+    previousMaxTurnsExceeded
   });
   deps.info(`[pre-fix] Model tier=${selection.tier} model=${selection.model}` + (selection.escalationReasons.length > 0 ? ` reasons=${selection.escalationReasons.join(",")}` : ""));
   const updatedHashHistory = [

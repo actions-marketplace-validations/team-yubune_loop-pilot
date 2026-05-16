@@ -554,12 +554,20 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
     previousEntry.hash === currentHash &&
     (previousEntry.modelTier ?? "escalated") === "base";
 
+  // TY-258: when the previous iteration ended with stopReason ==
+  // "max_turns_exceeded", retry once at the escalated tier. `stopReason` is
+  // intentionally preserved across `/restart-review` (see
+  // `applyRestartToState`) and cleared on the next clean-commit transition
+  // to `waiting_codex` (see post-fix), so this behaves as one-shot.
+  const previousMaxTurnsExceeded = state.stopReason === "max_turns_exceeded";
+
   const selection = selectModel({
     baseModel: config.claudeCodeModelBase,
     escalatedModel: config.claudeCodeModelEscalated,
     findings,
     previousCheckFailure: state.previousCheckFailure ?? null,
     repeatedFinding,
+    previousMaxTurnsExceeded,
   });
   deps.info(
     `[pre-fix] Model tier=${selection.tier} model=${selection.model}` +
