@@ -255,7 +255,7 @@ Workflow B は GitHub API で取得した `.head.repo.full_name` が空または
 > **注意:** GitHub API の `since` パラメータは review comments エンドポイントではサポートされていない場合がある。クライアント側で `created_at` をフィルタすること。
 
 **Phase 2: 判定**
-- P0 / P1 が 0 件 → `status: done` で終了
+- 閾値以上の finding が 0 件 → `status: done` で終了
 - `iteration_count >= MAX_REVIEW_ITERATIONS` → `status: stopped` で終了
 - `findings_hash_history`（直近 N 回分）と比較し、同一指摘ループ → `status: stopped` で終了（→ [ループ検知](../specs/loop-detection.md)）
 - 上記以外 → Phase 3 へ
@@ -279,7 +279,7 @@ Workflow B の `Run auto-fix loop` ステップは composite action（`loop/acti
    - claude-code-action の `outcome` を判定: `success` 以外なら `git reset --hard HEAD` で working tree を巻き戻し、`stopped` (`action_failure` / `action_timeout` / `max_turns_exceeded`) で終了
    - `git diff --numstat HEAD` → [`parseGitNumstat`](../../src/scope-checker.ts) → [`checkScope`](../../src/scope-checker.ts) で **20 files / 1000 lines / `src,tests,docs/` 以外を hard block**。違反時は revert + `stopped(scope_violation)`
    - `CHECK_COMMAND` を実行。失敗時は revert + `stopped(test_failure)` + 失敗末尾を `state.previousCheckFailure` に保存（次 iteration の prompt の追加コンテキストになる）
-   - 成功時は変更ファイルを `git add ...` → `commit` → `push`（コミットメッセージ: `fix: auto-resolve P0/P1/P2 findings from Codex review (iteration {N})`）。`previousCheckFailure` を `null` にリセットして clean run の状態を保持
+   - 成功時は変更ファイルを `git add ...` → `commit` → `push`（コミットメッセージ: `fix: auto-resolve Codex review findings (iteration {N})`）。`previousCheckFailure` を `null` にリセットして clean run の状態を保持
 
 **Phase 4: 再レビュー依頼**
 - post-fix が `@codex review` を投稿する。`CODEX_REVIEW_REQUEST_TOKEN` が設定されている場合は接続済みユーザー PAT を使い、未設定時は `GITHUB_TOKEN` に fallback する

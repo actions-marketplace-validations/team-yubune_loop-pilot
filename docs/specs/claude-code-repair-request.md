@@ -177,6 +177,6 @@ cut 位置は **文字単位** で行う（行境界には揃えない）。`res
 
 ## 関連ドキュメント
 
-- [Claude 修正エンジン仕様](claude-fix-engine.md) — 旧 `edit_file` 方式の仕様。本ドキュメントは後継。
+- [Claude 修正エンジン仕様 (archived)](../_archive/specs/claude-fix-engine.md) — 旧 `edit_file` 方式の仕様。本ドキュメントは後継。
 - [Severity パーサー仕様](severity-parser.md) — findings 抽出
 - [全ドキュメント索引](../README.md)

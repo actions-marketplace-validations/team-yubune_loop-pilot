@@ -3,7 +3,7 @@
 ## 停止条件
 
 ### 正常終了
-- 最新 Codex review の P0 / P1 が 0 件
+- 最新 Codex review の閾値以上 finding が 0 件（`AUTO_REVIEW_SEVERITY_THRESHOLD` で制御、default `P2`。TY-256）
 
 PR #7 で実測済み。Codex の `Codex Review: Didn't find any major issues.` コメントを受け、Workflow B が `done / no_findings` に更新し、完了コメントを投稿した。
 

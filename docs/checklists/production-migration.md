@@ -74,7 +74,7 @@ High は本番移植前に完了または明確な保留判断が必要な項目
 - [x] `GITHUB_TOKEN` の `contents: write` により、同一リポジトリ PR branch へ commit/push できる
 - [x] Codex inline comment artifact を保存できる
 - [x] `CHECK_COMMAND` 前に依存関係をセットアップできる
-- [x] P0/P1 が解消された場合、hidden comment が `done / no_findings` になる
+- [x] 閾値以上 (default `P2`) の finding が解消された場合、hidden comment が `done / no_findings` になる
 
 本番リポジトリでは branch protection、required checks、organization policy が異なる可能性があるため、上記は移植先でも最小 PR で再確認する。
 

@@ -114,7 +114,7 @@ inputs:
     required: false
     default: "false"
   severity-threshold:
-    description: "Severity threshold for the auto-fix pipeline. One of P0|P1|P2|P3. Default 'P2' preserves prior behavior (TY-256)."
+    description: "Severity threshold for the auto-fix pipeline. One of P0|P1|P2|P3. Default 'P2' preserves prior behavior (TY-256). NOTE (TY-268 #23): the parser fallback only catches P0 / P1 keywords without an explicit badge. When using P2 or P3 thresholds, ensure Codex prompts emit explicit severity badges for every finding — otherwise P2/P3 findings without a badge fall through to the `unparseable` counter and are not auto-fixed."
     required: false
     default: "P2"
   auto-review-hard-block-override:

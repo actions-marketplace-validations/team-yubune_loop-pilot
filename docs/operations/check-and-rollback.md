@@ -18,15 +18,15 @@ Claude が修正を適用した後に実行する検証コマンドは `CHECK_CO
 
 `CHECK_COMMAND` が非ゼロで終了した場合、commit / push は行わない。
 
-### ロールバックのフロー
+### ロールバックのフロー (TY-236 以降: `claude-code-action` 経路)
 
-1. Claude の edit 適用前に `git diff --name-only` と `git ls-files --others --exclude-standard` で変更前の状態を記録する
-2. 全 edit をメモリ上で検証する（`old_code` の一致確認）
-3. **検証失敗（`old_code` 不一致等）:** ディスク書き込みは行わないため、ロールバック不要
-4. **検証成功 → ディスクに一括書き込み → `CHECK_COMMAND` 実行**
-5. **`CHECK_COMMAND` 失敗:** 記録済みのファイル一覧を基に `git checkout -- <modified files>` + `rm <created files>` を実行する
+1. `anthropics/claude-code-action@v1` が repo-level repair を実行し、working tree を直接編集する（変更点は `git diff --numstat HEAD` で把握する）
+2. post-fix が `git diff` を `parseGitNumstat` → `checkScope` に通し、`src/`, `tests/`, `docs/` の allow-list と hard-block / size budget で違反を弾く
+3. **scope 違反:** `git reset --hard HEAD` + `git clean -ffd` で working tree を巻き戻し、`stopped(scope_violation)` で停止
+4. **scope OK → `CHECK_COMMAND` 実行**
+5. **`CHECK_COMMAND` 失敗:** 同じく `git reset --hard HEAD` + `git clean -ffd` で巻き戻し、`stopped(test_failure)` で停止。失敗末尾は `state.previousCheckFailure` に保存して次 iteration の prompt に渡す
 
-- `git clean -fd` のような無差別な削除は、PR ブランチに含まれる Claude 修正と無関係な untracked file を消失させるリスクがあるため使用しない
+- `git clean -ffd` を使うのは claude-code-action が新規ファイルを書き込みうるため。`git reset --hard HEAD` だけでは untracked file が残り、後続 iteration を汚染する
 
 ### 失敗時の状態と報告
 
@@ -46,7 +46,8 @@ Claude が修正を適用した後に実行する検証コマンドは `CHECK_CO
 
 ## 関連ドキュメント
 
-- [Claude 修正エンジン仕様](../specs/claude-fix-engine.md) — edit 適用ロジックの詳細
+- [Claude Code repair request 仕様](../specs/claude-code-repair-request.md) — claude-code-action 向け repair prompt
+- [Claude 修正エンジン仕様 (archived)](../_archive/specs/claude-fix-engine.md) — 旧 `edit_file` 直適用方式の歴史記録
 - [停止条件とリカバリ](stop-and-recovery.md) — テスト失敗後の停止・復帰
 - [推奨フローと状態管理](../architecture/flow-and-state.md) — フロー全体での位置づけ
 - [全ドキュメント索引](../README.md)
