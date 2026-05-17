@@ -3,10 +3,15 @@ import {
   applyRestartToState,
   handleRestartCommand,
   isRestartCommandLike,
+  isValidGitHubLogin,
   parseRestartCommand,
   type RestartCommandDeps,
 } from "../src/restart-command.js";
-import { createInitialState, type ReadStateResult } from "../src/state-manager.js";
+import {
+  StateUpdateConflictError,
+  createInitialState,
+  type ReadStateResult,
+} from "../src/state-manager.js";
 import type { ReviewState } from "../src/types.js";
 
 function makeState(overrides: Partial<ReviewState> = {}): ReviewState {
@@ -31,7 +36,7 @@ function foundState(state: ReviewState): ReadStateResult {
     corrupted: false,
     state,
     commentId: 999,
-    commentUpdatedAt: "2026-05-07T00:00:00Z",
+    commentUpdatedAt: "2026-05-09T00:00:00Z",
   };
 }
 
@@ -41,12 +46,16 @@ function makeDeps() {
     getCollaboratorPermission: vi.fn<RestartCommandDeps["getCollaboratorPermission"]>(
       async () => "write",
     ),
-    updateStateComment: vi.fn<RestartCommandDeps["updateStateComment"]>(async () => undefined),
+    updateStateComment: vi.fn<RestartCommandDeps["updateStateComment"]>(
+      async () => ({ updatedAt: "2026-05-09T00:00:01Z" }),
+    ),
     postComment: vi.fn<RestartCommandDeps["postComment"]>(async () => 12345),
+    postStopComment: vi.fn<RestartCommandDeps["postStopComment"]>(async () => 23456),
     postCodexReviewRequest: vi.fn<RestartCommandDeps["postCodexReviewRequest"]>(
       async () => 45678,
     ),
     addEyesReaction: vi.fn<RestartCommandDeps["addEyesReaction"]>(async () => undefined),
+    warning: vi.fn<RestartCommandDeps["warning"]>(),
   };
 }
 
@@ -205,6 +214,9 @@ describe("handleRestartCommand", () => {
         lastCodexRequestCommentId: null,
       },
       "token",
+      // TY-265: writes go through createLockedStateUpdater; the first write
+      // uses the initial commentUpdatedAt from ReadStateResult.
+      { expectedUpdatedAt: "2026-05-09T00:00:00Z" },
     );
     expect(deps.postCodexReviewRequest).toHaveBeenCalledWith(
       "team-yubune",
@@ -225,6 +237,8 @@ describe("handleRestartCommand", () => {
         lastCodexRequestCommentId: 45678,
       },
       "token",
+      // Second write chains the updated_at returned by the first patch.
+      { expectedUpdatedAt: "2026-05-09T00:00:01Z" },
     );
     expect(deps.updateStateComment.mock.invocationCallOrder[0]).toBeLessThan(
       deps.postCodexReviewRequest.mock.invocationCallOrder[0],
@@ -433,5 +447,132 @@ describe("handleRestartCommand", () => {
     expect(deps.postComment.mock.calls[0][3]).toContain(
       "❌ Restart rejected: insufficient permission.",
     );
+  });
+
+  it("posts a state_conflict stop comment and aborts when the first locked write conflicts (TY-265)", async () => {
+    const deps = makeDeps();
+    deps.updateStateComment.mockRejectedValueOnce(
+      new StateUpdateConflictError("412 Precondition Failed"),
+    );
+
+    await handleRestartCommand(
+      {
+        owner: "team-yubune",
+        repo: "test-auto-ai-review",
+        prNumber: 18,
+        triggerCommentId: 777,
+        triggerCommentBody: "/restart-review",
+        triggerUserLogin: "operator",
+        restartRoles: "author,write,maintain,admin",
+        githubToken: "token",
+        codexReviewRequestToken: "codex-token",
+        stateResult: foundState(makeState()),
+      },
+      deps,
+    );
+
+    expect(deps.postStopComment).toHaveBeenCalledTimes(1);
+    expect(deps.postStopComment.mock.calls[0][3]).toBe("state_conflict");
+    expect(deps.postStopComment.mock.calls[0][6]).toContain(
+      "[restart] failed to publish pre-codex state",
+    );
+    // No @codex review must be posted when the first write conflicts —
+    // otherwise we'd leave the loop in `waiting_codex` with no recorded
+    // request comment id.
+    expect(deps.postCodexReviewRequest).not.toHaveBeenCalled();
+  });
+
+  it("posts a state_conflict stop comment when the second locked write conflicts after posting @codex review (TY-265)", async () => {
+    const deps = makeDeps();
+    deps.updateStateComment
+      .mockResolvedValueOnce({ updatedAt: "2026-05-09T00:00:01Z" })
+      .mockRejectedValueOnce(new StateUpdateConflictError("412 Precondition Failed"));
+
+    await handleRestartCommand(
+      {
+        owner: "team-yubune",
+        repo: "test-auto-ai-review",
+        prNumber: 18,
+        triggerCommentId: 777,
+        triggerCommentBody: "/restart-review",
+        triggerUserLogin: "operator",
+        restartRoles: "author,write,maintain,admin",
+        githubToken: "token",
+        codexReviewRequestToken: "codex-token",
+        stateResult: foundState(makeState()),
+      },
+      deps,
+    );
+
+    expect(deps.postCodexReviewRequest).toHaveBeenCalledTimes(1);
+    expect(deps.postStopComment).toHaveBeenCalledTimes(1);
+    expect(deps.postStopComment.mock.calls[0][3]).toBe("state_conflict");
+    expect(deps.postStopComment.mock.calls[0][6]).toContain("review-request comment id");
+  });
+
+  it("rejects restart from a malformed triggerUserLogin without hitting the collaborator API (TY-265)", async () => {
+    const deps = makeDeps();
+
+    await handleRestartCommand(
+      {
+        owner: "team-yubune",
+        repo: "test-auto-ai-review",
+        prNumber: 18,
+        triggerCommentId: 777,
+        triggerCommentBody: "/restart-review",
+        triggerUserLogin: "../etc/passwd",
+        restartRoles: "author,write,maintain,admin",
+        githubToken: "token",
+        codexReviewRequestToken: "codex-token",
+        stateResult: foundState(makeState()),
+      },
+      deps,
+    );
+
+    expect(deps.getCollaboratorPermission).not.toHaveBeenCalled();
+    expect(deps.warning).toHaveBeenCalledWith(
+      expect.stringContaining("invalid GitHub login"),
+    );
+    expect(deps.postComment.mock.calls[0][3]).toContain(
+      "❌ Restart rejected: insufficient permission.",
+    );
+  });
+});
+
+describe("isValidGitHubLogin", () => {
+  it("accepts well-formed logins", () => {
+    expect(isValidGitHubLogin("octocat")).toBe(true);
+    expect(isValidGitHubLogin("a")).toBe(true);
+    expect(isValidGitHubLogin("a1")).toBe(true);
+    expect(isValidGitHubLogin("octo-cat")).toBe(true);
+    expect(isValidGitHubLogin("o-c-t-o")).toBe(true);
+    // 39 chars (GitHub's documented max)
+    expect(isValidGitHubLogin("a".repeat(39))).toBe(true);
+  });
+
+  it("accepts Enterprise Managed User (EMU) logins containing underscore", () => {
+    // EMU format: <idp_username>_<shortcode>
+    expect(isValidGitHubLogin("alice_contoso")).toBe(true);
+    expect(isValidGitHubLogin("john-doe_acme")).toBe(true);
+    expect(isValidGitHubLogin("user_corp")).toBe(true);
+  });
+
+  it("rejects logins with path-traversal or slash characters", () => {
+    expect(isValidGitHubLogin("../etc/passwd")).toBe(false);
+    expect(isValidGitHubLogin("foo/bar")).toBe(false);
+    expect(isValidGitHubLogin("..")).toBe(false);
+  });
+
+  it("rejects empty / too long / leading or trailing hyphen / consecutive hyphens", () => {
+    expect(isValidGitHubLogin("")).toBe(false);
+    expect(isValidGitHubLogin("a".repeat(40))).toBe(false);
+    expect(isValidGitHubLogin("-octocat")).toBe(false);
+    expect(isValidGitHubLogin("octocat-")).toBe(false);
+    expect(isValidGitHubLogin("octo--cat")).toBe(false);
+  });
+
+  it("rejects bot logins so restart cannot be issued by automation accounts", () => {
+    expect(isValidGitHubLogin("chatgpt-codex-connector[bot]")).toBe(false);
+    expect(isValidGitHubLogin("github-actions[bot]")).toBe(false);
   });
 });

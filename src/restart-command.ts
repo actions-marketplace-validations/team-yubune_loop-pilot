@@ -1,10 +1,13 @@
+import * as core from "@actions/core";
 import { ghApi } from "./gh.js";
 import {
   postCodexReviewRequest as defaultPostCodexReviewRequest,
   postComment as defaultPostComment,
+  postStopComment as defaultPostStopComment,
 } from "./comment-poster.js";
 import { updateStateComment as defaultUpdateStateComment } from "./state-manager.js";
 import type { ReadStateResult } from "./state-manager.js";
+import { createLockedStateUpdater } from "./state-comment-locker.js";
 import type { ReviewState, StopReason } from "./types.js";
 
 export type RestartMode = "soft" | "hard";
@@ -122,13 +125,7 @@ export interface RestartCommandDeps {
     user: string,
     token: string,
   ) => Promise<Permission>;
-  updateStateComment: (
-    owner: string,
-    repo: string,
-    commentId: number,
-    state: ReviewState,
-    token: string,
-  ) => Promise<unknown>;
+  updateStateComment: typeof defaultUpdateStateComment;
   postComment: (
     owner: string,
     repo: string,
@@ -136,6 +133,7 @@ export interface RestartCommandDeps {
     body: string,
     token: string,
   ) => Promise<number>;
+  postStopComment: typeof defaultPostStopComment;
   addEyesReaction: (
     owner: string,
     repo: string,
@@ -148,6 +146,24 @@ export interface RestartCommandDeps {
     prNumber: number,
     token: string,
   ) => Promise<number>;
+  warning: (message: string) => void;
+}
+
+/**
+ * GitHub username 仕様 (TY-265 #9):
+ *   - 1 〜 39 文字
+ *   - `[A-Za-z0-9_]` または single hyphen (`-`) のみ
+ *   - 先頭・末尾は `-` 不可、`--` 連続も不可
+ *   - Enterprise Managed Users (EMU) は `<idp_username>_<shortcode>` 形式で
+ *     underscore (`_`) を含むため、underscore は許容する。
+ *
+ * `triggerUserLogin` は collaborators API の path に直接埋め込まれるため、
+ * defense-in-depth として正規表現で validate する。bot login
+ * (`*[bot]`) は restart 権限を付与しない方針なので明示的に弾く。
+ */
+export function isValidGitHubLogin(login: string): boolean {
+  if (login.length < 1 || login.length > 39) return false;
+  return /^[a-zA-Z0-9_](?:[a-zA-Z0-9_]|-(?=[a-zA-Z0-9_]))*$/.test(login);
 }
 
 export async function handleRestartCommand(
@@ -215,13 +231,40 @@ export async function handleRestartCommand(
     return { handled: true };
   }
 
-  await deps.updateStateComment(
-    context.owner,
-    context.repo,
-    context.stateResult.commentId,
+  // TY-265 #5: route every state write through the optimistic-lock helper so a
+  // concurrent workflow run cannot silently clobber our restart, and a failure
+  // between the two state writes leaves an explicit `state_conflict` stop
+  // comment instead of `status=waiting_codex` with `lastCodexRequestCommentId=null`.
+  const updateStateCommentLocked = createLockedStateUpdater({
+    owner: context.owner,
+    repo: context.repo,
+    commentId: context.stateResult.commentId,
+    token: context.githubToken,
+    initialExpectedUpdatedAt: context.stateResult.commentUpdatedAt,
+    label: "pre-fix",
+    updateStateComment: deps.updateStateComment,
+    warning: deps.warning,
+    onConflict: async (detail) => {
+      await deps.postStopComment(
+        context.owner,
+        context.repo,
+        context.prNumber,
+        "state_conflict",
+        0,
+        0,
+        `${detail} Restart aborted because the hidden state comment was modified by another workflow run. Re-issue /restart-review once the active run finishes.`,
+        context.githubToken,
+      );
+    },
+  });
+
+  const firstWriteOk = await updateStateCommentLocked(
     preflight.nextState,
-    context.githubToken,
+    "[restart] failed to publish pre-codex state",
   );
+  if (!firstWriteOk) {
+    return { handled: true };
+  }
 
   const reviewRequestCommentId = await deps.postCodexReviewRequest(
     context.owner,
@@ -245,13 +288,14 @@ export async function handleRestartCommand(
     return { handled: true };
   }
 
-  await deps.updateStateComment(
-    context.owner,
-    context.repo,
-    context.stateResult.commentId,
+  const secondWriteOk = await updateStateCommentLocked(
     restartResult.nextState,
-    context.githubToken,
+    "[restart] failed to record review-request comment id after posting @codex review",
   );
+  if (!secondWriteOk) {
+    return { handled: true };
+  }
+
   await deps.postComment(
     context.owner,
     context.repo,
@@ -286,9 +330,20 @@ async function canRestart(
     RestartCommandContext,
     "owner" | "repo" | "prNumber" | "triggerUserLogin" | "restartRoles" | "githubToken"
   >,
-  deps: Pick<RestartCommandDeps, "getPrAuthor" | "getCollaboratorPermission">,
+  deps: Pick<RestartCommandDeps, "getPrAuthor" | "getCollaboratorPermission" | "warning">,
 ): Promise<boolean> {
   if (!context.triggerUserLogin) {
+    return false;
+  }
+  // TY-265 #9: the login is path-embedded into
+  // `repos/<owner>/<repo>/collaborators/<user>/permission`. GitHub's username
+  // spec excludes `/` and `..`, but defense-in-depth: reject anything that
+  // doesn't match the spec (incl. bot suffixes `[bot]`) before issuing the API
+  // call, and surface a warning so operators can spot abuse attempts.
+  if (!isValidGitHubLogin(context.triggerUserLogin)) {
+    deps.warning(
+      `[restart] Rejecting restart from user with invalid GitHub login: "${context.triggerUserLogin}"`,
+    );
     return false;
   }
 
@@ -434,6 +489,8 @@ const defaultRestartCommandDeps: RestartCommandDeps = {
   getCollaboratorPermission,
   updateStateComment: defaultUpdateStateComment,
   postComment: defaultPostComment,
+  postStopComment: defaultPostStopComment,
   addEyesReaction,
   postCodexReviewRequest: defaultPostCodexReviewRequest,
+  warning: (message: string) => core.warning(message),
 };

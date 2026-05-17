@@ -106,13 +106,14 @@ describe("runCheckCommand", () => {
     expect(mockedExecFileSync).not.toHaveBeenCalled();
   });
 
-  it("strips secret env vars before invoking the child process", async () => {
+  it("strips secret env vars and all INPUT_* prefix before invoking the child process", async () => {
     process.env.ANTHROPIC_API_KEY = "anth-secret";
     process.env.GITHUB_TOKEN = "gh-secret";
     process.env.GH_TOKEN = "gh2-secret";
     process.env.INPUT_ANTHROPIC_API_KEY = "input-anth";
     process.env.INPUT_GITHUB_TOKEN = "input-gh";
-    process.env.INPUT_OTHER = "kept";
+    process.env.INPUT_OTHER = "input-other";
+    process.env.PATH = "/usr/bin:/bin";
     mockExecOnce({ stdout: "", stderr: "" });
 
     await runCheckCommand("npm test", []);
@@ -125,10 +126,14 @@ describe("runCheckCommand", () => {
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.GITHUB_TOKEN).toBeUndefined();
     expect(env.GH_TOKEN).toBeUndefined();
+    // TY-264 hardened the strip to remove every INPUT_* env (defense-in-depth
+    // for future action inputs), not just the known token prefixes.
     expect(env.INPUT_ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.INPUT_GITHUB_TOKEN).toBeUndefined();
-    // Non-sensitive vars are preserved so the check command can read PATH, HOME, etc.
-    expect(env.INPUT_OTHER).toBe("kept");
+    expect(env.INPUT_OTHER).toBeUndefined();
+    // Non-INPUT / non-secret vars (PATH, HOME, etc.) are preserved so the
+    // child process can still run.
+    expect(env.PATH).toBe("/usr/bin:/bin");
   });
 
   it("rolls back modified files when the check command fails", async () => {

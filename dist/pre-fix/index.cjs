@@ -20275,6 +20275,11 @@ function applyRestartToState(state, mode, reviewRequestCommentId) {
   }
   return { ok: true, nextState, previousStopReason: state.stopReason };
 }
+function isValidGitHubLogin(login) {
+  if (login.length < 1 || login.length > 39)
+    return false;
+  return /^[a-zA-Z0-9_](?:[a-zA-Z0-9_]|-(?=[a-zA-Z0-9_]))*$/.test(login);
+}
 async function handleRestartCommand(context, deps = defaultRestartCommandDeps) {
   const command = parseRestartCommand(context.triggerCommentBody);
   if (!command.isRestart) {
@@ -20302,14 +20307,33 @@ async function handleRestartCommand(context, deps = defaultRestartCommandDeps) {
     await deps.postComment(context.owner, context.repo, context.prNumber, restartRejectionMessage(preflight.reason), context.githubToken);
     return { handled: true };
   }
-  await deps.updateStateComment(context.owner, context.repo, context.stateResult.commentId, preflight.nextState, context.githubToken);
+  const updateStateCommentLocked = createLockedStateUpdater({
+    owner: context.owner,
+    repo: context.repo,
+    commentId: context.stateResult.commentId,
+    token: context.githubToken,
+    initialExpectedUpdatedAt: context.stateResult.commentUpdatedAt,
+    label: "pre-fix",
+    updateStateComment: deps.updateStateComment,
+    warning: deps.warning,
+    onConflict: async (detail) => {
+      await deps.postStopComment(context.owner, context.repo, context.prNumber, "state_conflict", 0, 0, `${detail} Restart aborted because the hidden state comment was modified by another workflow run. Re-issue /restart-review once the active run finishes.`, context.githubToken);
+    }
+  });
+  const firstWriteOk = await updateStateCommentLocked(preflight.nextState, "[restart] failed to publish pre-codex state");
+  if (!firstWriteOk) {
+    return { handled: true };
+  }
   const reviewRequestCommentId = await deps.postCodexReviewRequest(context.owner, context.repo, context.prNumber, context.codexReviewRequestToken);
   const restartResult = applyRestartToState(context.stateResult.state, command.mode, reviewRequestCommentId);
   if (!restartResult.ok) {
     await deps.postComment(context.owner, context.repo, context.prNumber, restartRejectionMessage(restartResult.reason), context.githubToken);
     return { handled: true };
   }
-  await deps.updateStateComment(context.owner, context.repo, context.stateResult.commentId, restartResult.nextState, context.githubToken);
+  const secondWriteOk = await updateStateCommentLocked(restartResult.nextState, "[restart] failed to record review-request comment id after posting @codex review");
+  if (!secondWriteOk) {
+    return { handled: true };
+  }
   await deps.postComment(context.owner, context.repo, context.prNumber, [
     `\u{1F7E2} Auto-review restarted by @${context.triggerUserLogin}.`,
     "",
@@ -20327,6 +20351,10 @@ async function handleRestartCommand(context, deps = defaultRestartCommandDeps) {
 }
 async function canRestart(context, deps) {
   if (!context.triggerUserLogin) {
+    return false;
+  }
+  if (!isValidGitHubLogin(context.triggerUserLogin)) {
+    deps.warning(`[restart] Rejecting restart from user with invalid GitHub login: "${context.triggerUserLogin}"`);
     return false;
   }
   const roles = parseRoles(context.restartRoles);
@@ -20408,8 +20436,10 @@ var defaultRestartCommandDeps = {
   getCollaboratorPermission,
   updateStateComment,
   postComment,
+  postStopComment,
   addEyesReaction,
-  postCodexReviewRequest
+  postCodexReviewRequest,
+  warning: (message) => warning(message)
 };
 
 // dist/claude-code-repair-request.js
