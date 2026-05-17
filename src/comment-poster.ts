@@ -28,7 +28,13 @@ export async function postComment(
       `repos/${owner}/${name}/issues/${pr}/comments`,
       "-X",
       "POST",
-      "-f",
+      // TY-269: use `--raw-field` for body. Plain `--field` (= `-f`)
+      // interprets a leading `@` as a file-read directive, which silently
+      // corrupts payloads like `@codex review` (the body
+      // `postCodexReviewRequest` sends — gh would try to open a file named
+      // `codex review`). `--raw-field` (= `-F`) passes the value through as a
+      // literal string with no `@` interpretation.
+      "--raw-field",
       `body=${body}`,
       "--jq",
       ".id",

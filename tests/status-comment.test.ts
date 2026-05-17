@@ -405,3 +405,72 @@ describe("createInitialStatusSnapshot", () => {
     expect(s.nextAction).toBe("—");
   });
 });
+
+describe("status-comment delimiter robustness (TY-269 #14)", () => {
+  it("survives entry bodies that contain the legacy escape sequence `--\\>`", () => {
+    // Before TY-269 the parser blindly converted `--\>` back to `-->`. If an
+    // entry body genuinely contained `--\>` (e.g., a stack trace or log line),
+    // the round-trip would corrupt it. Base64 encoding eliminates the
+    // ambiguity entirely.
+    const original = snapshot({
+      entries: [entry({ body: "noise --\\> more noise --\\>" })],
+    });
+    const body = renderStatusCommentBody(original);
+    const parsed = parseStatusCommentBody(body);
+    expect(parsed).toEqual(original);
+  });
+
+  it("base64-encoded payload contains neither `-->` nor the data-block marker", () => {
+    const original = snapshot({
+      entries: [
+        entry({
+          body: "raw output with --> and <!-- auto-review-status-data inline",
+        }),
+      ],
+    });
+    const body = renderStatusCommentBody(original);
+    // Slice out the data block content (between the open marker and the
+    // closing `-->`) to verify the encoded payload is collision-free.
+    const dataStart =
+      body.indexOf("<!-- auto-review-status-data") +
+      "<!-- auto-review-status-data".length;
+    const dataEnd = body.indexOf("-->", dataStart);
+    const dataBlock = body.slice(dataStart, dataEnd);
+    expect(dataBlock).not.toContain("-->");
+    // The base64 payload starts with `b64:` followed by [A-Za-z0-9+/=] — no
+    // hyphens or angle brackets, so neither delimiter can ever appear inside
+    // the payload itself, regardless of the entry contents.
+    expect(dataBlock).toMatch(/b64:[A-Za-z0-9+/=]+/);
+  });
+
+  it("still parses legacy `--\\>` format for backward compatibility", () => {
+    // Comments authored before this rollout used the inline `--\>` escape.
+    // Verify the parser can still load them so in-flight PRs keep their
+    // history across the rollout commit.
+    const original = snapshot({
+      entries: [entry({ body: "legacy payload" })],
+    });
+    const json = JSON.stringify(original).replace(/-->/g, "--\\>");
+    const legacyBody = [
+      "<!-- auto-review-status -->",
+      "## Auto-review status",
+      "",
+      "<!-- auto-review-status-data",
+      json,
+      "-->",
+      "",
+    ].join("\n");
+    const parsed = parseStatusCommentBody(legacyBody);
+    expect(parsed).toEqual(original);
+  });
+
+  it("returns null on a body whose payload is neither base64 nor valid JSON", () => {
+    const corruptBody = [
+      "<!-- auto-review-status -->",
+      "<!-- auto-review-status-data",
+      "{not valid json and not base64",
+      "-->",
+    ].join("\n");
+    expect(parseStatusCommentBody(corruptBody)).toBeNull();
+  });
+});

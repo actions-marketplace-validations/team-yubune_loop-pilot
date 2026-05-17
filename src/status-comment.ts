@@ -86,13 +86,40 @@ function renderStatusCommentBodyUnchecked(snapshot: StatusSnapshot): string {
     "",
   ].join("\n");
 
+  // TY-269 #14: base64-encode the JSON payload so that arbitrary entry bodies
+  // (CHECK_COMMAND tail, stack traces, etc.) can never collide with the HTML
+  // comment delimiter or the data-block marker. Base64 output is ASCII without
+  // `-`, `<`, or `>`, so neither `-->` nor `<!-- auto-review-status-data` can
+  // appear in the encoded payload. Visible history above stays as raw markdown
+  // for human readability.
   const data = [
     STATUS_COMMENT_DATA_OPEN,
-    JSON.stringify(snapshot).replace(/-->/g, "--\\>"),
+    encodePayload(JSON.stringify(snapshot)),
     STATUS_COMMENT_DATA_CLOSE,
   ].join("\n");
 
   return `${header}\n${history}\n${data}\n`;
+}
+
+const PAYLOAD_PREFIX = "b64:";
+
+function encodePayload(json: string): string {
+  return PAYLOAD_PREFIX + Buffer.from(json, "utf8").toString("base64");
+}
+
+/**
+ * Decode a base64-prefixed payload, returning the JSON string. Returns `null`
+ * on any decode failure so callers can fall back to legacy parsing.
+ */
+function decodePayload(raw: string): string | null {
+  if (!raw.startsWith(PAYLOAD_PREFIX)) return null;
+  try {
+    return Buffer.from(raw.slice(PAYLOAD_PREFIX.length), "base64").toString(
+      "utf8",
+    );
+  } catch {
+    return null;
+  }
 }
 
 export function renderStatusCommentBody(snapshot: StatusSnapshot): string {
@@ -135,12 +162,25 @@ export function parseStatusCommentBody(body: string): StatusSnapshot | null {
     const afterOpen = body.slice(dataStart + STATUS_COMMENT_DATA_OPEN.length);
     const closeIdx = afterOpen.indexOf(STATUS_COMMENT_DATA_CLOSE);
     if (closeIdx !== -1) {
-      const jsonRaw = afterOpen.slice(0, closeIdx).trim().replace(/--\\>/g, "-->");
-      try {
-        const parsed: unknown = JSON.parse(jsonRaw);
-        if (isStatusSnapshot(parsed)) result = parsed;
-      } catch {
-        // not valid JSON at this position; continue to the next occurrence
+      const raw = afterOpen.slice(0, closeIdx).trim();
+      // TY-269 #14: new format is `b64:<base64-json>`; legacy format inlines
+      // the JSON with `-->` escaped as `--\>`. Try base64 first, fall back to
+      // the legacy escape so in-flight status comments keep their history
+      // across this rollout.
+      const candidates: string[] = [];
+      const decoded = decodePayload(raw);
+      if (decoded !== null) candidates.push(decoded);
+      candidates.push(raw.replace(/--\\>/g, "-->"));
+      for (const jsonRaw of candidates) {
+        try {
+          const parsed: unknown = JSON.parse(jsonRaw);
+          if (isStatusSnapshot(parsed)) {
+            result = parsed;
+            break;
+          }
+        } catch {
+          // try the next candidate
+        }
       }
     }
     searchFrom = dataStart + 1;
@@ -281,7 +321,10 @@ async function createStatusCommentImpl(
       "--method",
       "POST",
       `repos/${owner}/${name}/issues/${pr}/comments`,
-      "--field",
+      // TY-269: `--raw-field` (= `-F`) avoids gh CLI's `@<value>` file-read
+      // interpretation. Status-comment bodies are pre-rendered markdown and
+      // could legitimately start with `@`.
+      "--raw-field",
       `body=${body}`,
       "--jq",
       ".id",
@@ -310,7 +353,7 @@ async function updateStatusCommentImpl(
       "--method",
       "PATCH",
       `repos/${owner}/${name}/issues/comments/${commentId}`,
-      "--field",
+      "--raw-field",
       `body=${body}`,
       "--jq",
       ".id",

@@ -19480,7 +19480,9 @@ async function createStateComment(owner, name, pr, state, token) {
     "--method",
     "POST",
     `repos/${owner}/${name}/issues/${pr}/comments`,
-    "--field",
+    // TY-269: see comment-poster.ts; `--raw-field` avoids gh CLI's
+    // `@<value>` file-read interpretation for state-comment bodies.
+    "--raw-field",
     `body=${body}`,
     "--jq",
     ".id"
@@ -19526,7 +19528,10 @@ async function patchStateComment(owner, name, commentId, body, token, expectedUp
     "--method",
     "PATCH",
     `repos/${owner}/${name}/issues/comments/${commentId}`,
-    "--field",
+    // TY-269: see comment-poster.ts; `--raw-field` skips gh CLI's `@<value>`
+    // file-read interpretation so state-comment bodies cannot be mis-parsed
+    // if they ever start with `@`.
+    "--raw-field",
     `body=${body}`,
     "--jq",
     "{body: .body, updated_at: .updated_at} | @json"
@@ -19570,7 +19575,13 @@ async function postComment(owner, name, pr, body, token) {
     `repos/${owner}/${name}/issues/${pr}/comments`,
     "-X",
     "POST",
-    "-f",
+    // TY-269: use `--raw-field` for body. Plain `--field` (= `-f`)
+    // interprets a leading `@` as a file-read directive, which silently
+    // corrupts payloads like `@codex review` (the body
+    // `postCodexReviewRequest` sends — gh would try to open a file named
+    // `codex review`). `--raw-field` (= `-F`) passes the value through as a
+    // literal string with no `@` interpretation.
+    "--raw-field",
     `body=${body}`,
     "--jq",
     ".id"

@@ -37,8 +37,10 @@ function expectPostCommentInvocation(call: unknown[]): {
   body: string;
 } {
   const args = call[0] as readonly string[];
-  // postComment posts via `api repos/{owner}/{name}/issues/{pr}/comments -X POST -f body=<body> --jq .id`
-  const bodyArgIndex = args.indexOf("-f");
+  // TY-269 #13 (fix-up): postComment uses `--raw-field body=<body>` so that
+  // gh CLI does not treat a leading `@` (e.g. `@codex review`) as a
+  // file-read directive. The old `-f` / `--field` are no longer accepted.
+  const bodyArgIndex = args.indexOf("--raw-field");
   const bodyArg = args[bodyArgIndex + 1] ?? "";
   expect(bodyArg.startsWith("body=")).toBe(true);
   return { args, body: bodyArg.slice("body=".length) };

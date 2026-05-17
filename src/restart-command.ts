@@ -477,7 +477,10 @@ async function addEyesReaction(
       "POST",
       "-H",
       "Accept: application/vnd.github+json",
-      "-f",
+      // TY-269: `--raw-field` (= `-F`) avoids gh CLI's `@<value>` file-read
+      // interpretation. `eyes` is safe here but stay consistent with the
+      // rest of the codebase.
+      "--raw-field",
       "content=eyes",
     ],
     token,

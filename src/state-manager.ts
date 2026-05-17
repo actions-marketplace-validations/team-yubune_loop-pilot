@@ -280,7 +280,9 @@ export async function createStateComment(
       "--method",
       "POST",
       `repos/${owner}/${name}/issues/${pr}/comments`,
-      "--field",
+      // TY-269: see comment-poster.ts; `--raw-field` avoids gh CLI's
+      // `@<value>` file-read interpretation for state-comment bodies.
+      "--raw-field",
       `body=${body}`,
       "--jq",
       ".id",
@@ -380,7 +382,10 @@ async function patchStateComment(
     "--method",
     "PATCH",
     `repos/${owner}/${name}/issues/comments/${commentId}`,
-    "--field",
+    // TY-269: see comment-poster.ts; `--raw-field` skips gh CLI's `@<value>`
+    // file-read interpretation so state-comment bodies cannot be mis-parsed
+    // if they ever start with `@`.
+    "--raw-field",
     `body=${body}`,
     "--jq",
     "{body: .body, updated_at: .updated_at} | @json",

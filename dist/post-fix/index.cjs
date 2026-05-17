@@ -19459,7 +19459,10 @@ async function patchStateComment(owner, name, commentId, body, token, expectedUp
     "--method",
     "PATCH",
     `repos/${owner}/${name}/issues/comments/${commentId}`,
-    "--field",
+    // TY-269: see comment-poster.ts; `--raw-field` skips gh CLI's `@<value>`
+    // file-read interpretation so state-comment bodies cannot be mis-parsed
+    // if they ever start with `@`.
+    "--raw-field",
     `body=${body}`,
     "--jq",
     "{body: .body, updated_at: .updated_at} | @json"
@@ -19958,13 +19961,26 @@ function renderStatusCommentBodyUnchecked(snapshot) {
   ].join("\n");
   const data = [
     STATUS_COMMENT_DATA_OPEN,
-    JSON.stringify(snapshot).replace(/-->/g, "--\\>"),
+    encodePayload(JSON.stringify(snapshot)),
     STATUS_COMMENT_DATA_CLOSE
   ].join("\n");
   return `${header}
 ${history}
 ${data}
 `;
+}
+var PAYLOAD_PREFIX = "b64:";
+function encodePayload(json) {
+  return PAYLOAD_PREFIX + Buffer.from(json, "utf8").toString("base64");
+}
+function decodePayload(raw) {
+  if (!raw.startsWith(PAYLOAD_PREFIX))
+    return null;
+  try {
+    return Buffer.from(raw.slice(PAYLOAD_PREFIX.length), "base64").toString("utf8");
+  } catch {
+    return null;
+  }
 }
 function renderStatusCommentBody(snapshot) {
   for (let count = snapshot.entries.length; count >= 0; count--) {
@@ -19985,12 +20001,21 @@ function parseStatusCommentBody(body) {
     const afterOpen = body.slice(dataStart + STATUS_COMMENT_DATA_OPEN.length);
     const closeIdx = afterOpen.indexOf(STATUS_COMMENT_DATA_CLOSE);
     if (closeIdx !== -1) {
-      const jsonRaw = afterOpen.slice(0, closeIdx).trim().replace(/--\\>/g, "-->");
-      try {
-        const parsed = JSON.parse(jsonRaw);
-        if (isStatusSnapshot(parsed))
-          result = parsed;
-      } catch {
+      const raw = afterOpen.slice(0, closeIdx).trim();
+      const candidates = [];
+      const decoded = decodePayload(raw);
+      if (decoded !== null)
+        candidates.push(decoded);
+      candidates.push(raw.replace(/--\\>/g, "-->"));
+      for (const jsonRaw of candidates) {
+        try {
+          const parsed = JSON.parse(jsonRaw);
+          if (isStatusSnapshot(parsed)) {
+            result = parsed;
+            break;
+          }
+        } catch {
+        }
       }
     }
     searchFrom = dataStart + 1;
@@ -20078,7 +20103,10 @@ async function createStatusCommentImpl(owner, name, pr, body, token) {
     "--method",
     "POST",
     `repos/${owner}/${name}/issues/${pr}/comments`,
-    "--field",
+    // TY-269: `--raw-field` (= `-F`) avoids gh CLI's `@<value>` file-read
+    // interpretation. Status-comment bodies are pre-rendered markdown and
+    // could legitimately start with `@`.
+    "--raw-field",
     `body=${body}`,
     "--jq",
     ".id"
@@ -20095,7 +20123,7 @@ async function updateStatusCommentImpl(owner, name, commentId, body, token) {
     "--method",
     "PATCH",
     `repos/${owner}/${name}/issues/comments/${commentId}`,
-    "--field",
+    "--raw-field",
     `body=${body}`,
     "--jq",
     ".id"
@@ -20147,7 +20175,13 @@ async function postComment(owner, name, pr, body, token) {
     `repos/${owner}/${name}/issues/${pr}/comments`,
     "-X",
     "POST",
-    "-f",
+    // TY-269: use `--raw-field` for body. Plain `--field` (= `-f`)
+    // interprets a leading `@` as a file-read directive, which silently
+    // corrupts payloads like `@codex review` (the body
+    // `postCodexReviewRequest` sends — gh would try to open a file named
+    // `codex review`). `--raw-field` (= `-F`) passes the value through as a
+    // literal string with no `@` interpretation.
+    "--raw-field",
     `body=${body}`,
     "--jq",
     ".id"
