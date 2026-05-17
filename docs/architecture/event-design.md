@@ -277,7 +277,7 @@ Workflow B の `Run auto-fix loop` ステップは composite action（`loop/acti
 3. **post-fix（`loop/post-fix`、Node JS action）**
    - `if: always() && steps.pre.outputs.should_run == 'true'`（claude-code-action 失敗時もスコープ検査と state 更新を走らせる）
    - claude-code-action の `outcome` を判定: `success` 以外なら `git reset --hard HEAD` で working tree を巻き戻し、`stopped` (`action_failure` / `action_timeout` / `max_turns_exceeded`) で終了
-   - `git diff --numstat HEAD` → [`parseGitNumstat`](../../src/scope-checker.ts) → [`checkScope`](../../src/scope-checker.ts) で **20 files / 1000 lines / `src,tests,docs/` 以外を hard block**。違反時は revert + `stopped(scope_violation)`
+   - `git diff --numstat HEAD` → [`parseGitNumstat`](../../src/scope-checker.ts) → [`checkScope`](../../src/scope-checker.ts) で **20 files / 1000 lines / default block-list (`.github/`, `dist/`, `package.json`, root dotfiles 等)** を確認。block にマッチしないパスはすべて許可される（TY-271 で allow-list 撤廃）。違反時は revert + `stopped(scope_violation)`。block-list の運用は [scope-policy.md](../operations/scope-policy.md) を参照
    - `CHECK_COMMAND` を実行。失敗時は revert + `stopped(test_failure)` + 失敗末尾を `state.previousCheckFailure` に保存（次 iteration の prompt の追加コンテキストになる）
    - 成功時は変更ファイルを `git add ...` → `commit` → `push`（コミットメッセージ: `fix: auto-resolve Codex review findings (iteration {N})`）。`previousCheckFailure` を `null` にリセットして clean run の状態を保持
 

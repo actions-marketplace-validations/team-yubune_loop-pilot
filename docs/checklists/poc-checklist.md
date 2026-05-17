@@ -14,7 +14,7 @@
 - [x] `@codex review` 投稿専用の接続済みユーザー PAT（`CODEX_REVIEW_REQUEST_TOKEN`）を Workflow A/B で使用し、未設定時は `GITHUB_TOKEN` に fallback → [Codex review request token](../architecture/event-design.md#codex-review-request-token)
 - [x] `anthropics/claude-code-action@v1` への repair request 構築（`buildClaudeCodeRepairRequest` / `buildClaudeCodeRepairPrompt`） → [Claude Code repair request](../specs/claude-code-repair-request.md)
 - [x] composite action `loop/action.yml` を pre-fix → claude-code-action → post-fix の3-step に分割 → [Workflow B Phase 3](../architecture/event-design.md#workflow-b-の処理フェーズ)
-- [x] post-fix の変更スコープ検査（`src/`, `tests/`, `docs/` のみ、`.github/` 等は hard block、20 files / 1000 lines 上限） → [Claude Code Action 実行制御](../operations/security.md#変更スコープ検査post-fix)
+- [x] post-fix の変更スコープ検査（block-list 方式: `.github/`/`dist/`/`package.json` 等を default block、その他は許可、20 files / 1000 lines 上限、`AUTO_REVIEW_BLOCK_PATHS` で運用カスタマイズ可） → [scope-policy.md](../operations/scope-policy.md)
 - [x] `CHECK_COMMAND` 実行 + 失敗時ロールバック → [検証コマンドとロールバック](../operations/check-and-rollback.md)
 - [x] CHECK_COMMAND 失敗時の tail を `previousCheckFailure` に保存し、次 iteration の prompt にコンテキストとして渡す
 - [x] claude-code-action の `outcome=cancelled` を `action_timeout`、`outcome=failure` を `action_failure` / `max_turns_exceeded` に変換する post-fix 分岐
@@ -44,7 +44,7 @@
 - fork PR からの起動防止は workflow/action guard として実装済み。本リポジトリで外部 fork PR を作成しての E2E 検証は未実施。
 - stabilize safeguard は実装・ユニットテスト済み。PR #7 では inline comment が取得できたため、追加 polling が必要なケースは踏んでいない。
 - claude-code-action 経路（TY-237）の dogfood は本 PR をターゲットに `auto-review-fix` ラベルで検証する。
-- post-fix 変更スコープ検査は `tests/scope-checker.test.ts` で網羅済み。意図的なスコープ外修正を発生させた E2E は未実施（[Claude Code Action 実行制御](../operations/security.md#変更スコープ検査post-fix) 参照）。
+- post-fix 変更スコープ検査は `tests/scope-checker.test.ts` で網羅済み。意図的なスコープ外修正を発生させた E2E は未実施（[scope-policy.md](../operations/scope-policy.md) 参照）。
 - `max_turns_exceeded` の検出は `actionExecutionFile` の文字列マッチに依存。execution file の正式スキーマが claude-code-action 側で公開されたら見直す。
 
 ---

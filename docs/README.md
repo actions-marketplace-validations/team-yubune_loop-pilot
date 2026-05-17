@@ -41,6 +41,7 @@ PoC の主要 E2E は PR #7 / TY-11 で確認済み。
 | ドキュメント | 内容 |
 |-------------|------|
 | [セキュリティ](operations/security.md) | Fork PR 防止・Bot Token スコープ・API キー管理 |
+| [Scope Policy](operations/scope-policy.md) | post-fix の変更スコープ検査仕様・`AUTO_REVIEW_BLOCK_PATHS` syntax・旧変数 deprecation マイグレーション (TY-271) |
 | [検証コマンドとロールバック](operations/check-and-rollback.md) | CHECK_COMMAND・失敗時ロールバック・出力サニタイズ |
 | [停止条件とリカバリ](operations/stop-and-recovery.md) | 正常/強制/異常停止・停止コメント・`/restart-review` による再実行手順 |
 | [Production E2E Validation Notes](operations/production-e2e-validation.md) | TY-145 の本番移植前 E2E 検証結果・本番 repo で必要な人間確認手順 |

@@ -42,10 +42,11 @@ const crashConfig: Config = {
   claudeCodeModelEscalated: "claude-opus-4-7",
   autoMergeOnClean: false,
   severityThreshold: "P2",
-  hardBlockOverride: [],
-  scopeAllowedPathPrefixes: [],
+  autoReviewBlockPaths: "",
   scopeMaxFiles: 0,
   scopeMaxLines: 0,
+  hardBlockOverride: [],
+  scopeAllowedPathPrefixes: [],
   scopeAdditionalHardBlockPrefixes: [],
 };
 

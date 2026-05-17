@@ -17,8 +17,10 @@ import {
   parseGitNumstat,
   checkScope,
   buildScopePolicy,
+  parseBlockPathsSpec,
   type ChangedFile,
   type ScopeCheckResult,
+  type ScopeCheckViolation,
 } from "./scope-checker.js";
 import {
   truncatePreviousCheckFailure,
@@ -174,6 +176,100 @@ function detectMaxTurnsExceeded(executionFileContents: string | null): boolean {
     haystack.includes("max turns") ||
     haystack.includes("maximum turns")
   );
+}
+
+const SCOPE_POLICY_DOC = "docs/operations/scope-policy.md";
+
+/**
+ * Compose an actionable `Detail:` body for the stop comment when the post-fix
+ * scope check rejects a diff (TY-271).
+ *
+ * Each violation reason maps to a different remediation: hard-block paths get
+ * a copy-pasteable `AUTO_REVIEW_BLOCK_PATHS=!<path>` snippet; budget overruns
+ * point at `AUTO_REVIEW_SCOPE_MAX_*`; binary changes are flagged as outside
+ * the auto-fix surface; path traversal is reported as a security refusal with
+ * no override path.
+ */
+export function formatScopeViolationDetail(
+  violation: ScopeCheckViolation,
+  maxFiles: number,
+  maxLines: number,
+): string {
+  switch (violation.reason) {
+    case "hard_block_path": {
+      const matched = violation.matchedBlockPatterns ?? [];
+      const lockedPaths = matched
+        .filter((p) => p.locked)
+        .map((p) => p.path);
+      const unlockedSnippets = matched
+        .filter((p) => !p.locked)
+        .map((p) => `!${p.path}`);
+      const uniqueSnippets = Array.from(new Set(unlockedSnippets));
+      const lines: string[] = [
+        "Auto-fix touched paths blocked by the scope check.",
+        "",
+        "Affected paths:",
+        ...violation.offendingPaths.map((p) => `  - ${p}`),
+      ];
+      if (uniqueSnippets.length > 0) {
+        lines.push(
+          "",
+          "To let Claude edit these paths, add the matching `!` entries to the",
+          "`AUTO_REVIEW_BLOCK_PATHS` Repository variable:",
+          "",
+          `  AUTO_REVIEW_BLOCK_PATHS = "${uniqueSnippets.join(",")}"`,
+          "",
+          "(If the variable is already set, append the new entries with a comma.)",
+        );
+      }
+      if (lockedPaths.length > 0) {
+        lines.push(
+          "",
+          `Note: \`.github/\` is locked and cannot be unblocked — ${lockedPaths.join(", ")} must be edited manually.`,
+        );
+      }
+      lines.push("", `See ${SCOPE_POLICY_DOC}.`);
+      return lines.join("\n");
+    }
+    case "too_many_files":
+      return [
+        `Auto-fix diff exceeds the file-count budget (${violation.offendingPaths.length} > ${maxFiles}).`,
+        "",
+        "To raise the limit, set the `AUTO_REVIEW_SCOPE_MAX_FILES` Repository variable",
+        "(or pass the `scope-max-files` action input) to a higher value.",
+        "",
+        `See ${SCOPE_POLICY_DOC}.`,
+      ].join("\n");
+    case "too_many_lines":
+      return [
+        `Auto-fix diff exceeds the line-count budget (limit ${maxLines}).`,
+        "",
+        "To raise the limit, set the `AUTO_REVIEW_SCOPE_MAX_LINES` Repository variable",
+        "(or pass the `scope-max-lines` action input) to a higher value.",
+        "",
+        `See ${SCOPE_POLICY_DOC}.`,
+      ].join("\n");
+    case "binary_change":
+      return [
+        "Auto-fix produced a binary change, which the loop cannot validate.",
+        "",
+        "Affected paths:",
+        ...violation.offendingPaths.map((p) => `  - ${p}`),
+        "",
+        "Auto-fix only handles text edits. Apply the binary change manually.",
+        `See ${SCOPE_POLICY_DOC}.`,
+      ].join("\n");
+    case "path_traversal":
+      return [
+        "Refusing to apply a diff containing path-traversal or absolute paths.",
+        "",
+        "Offending paths:",
+        ...violation.offendingPaths.map((p) => `  - ${p}`),
+        "",
+        "This is a hard security refusal and has no override.",
+        `See ${SCOPE_POLICY_DOC}.`,
+      ].join("\n");
+  }
 }
 
 interface FailureExitOptions {
@@ -447,31 +543,46 @@ export async function runPostFix(
     return;
   }
 
-  if (config.hardBlockOverride.length > 0) {
-    deps.info(
-      `[scope-check] hard-block override paths: [${config.hardBlockOverride.join(", ")}]`,
+  // TY-271: deprecation warnings for the three superseded scope variables.
+  // Old values still flow through `buildScopePolicy` (folded into the new
+  // block spec) so existing repos keep working until the next minor.
+  if (config.scopeAllowedPathPrefixes.length > 0) {
+    deps.warning(
+      "[scope-check] AUTO_REVIEW_SCOPE_ALLOWED_PATH_PREFIXES / scope-allowed-path-prefixes is deprecated (TY-271). The allow-list concept has been removed; the value is ignored. The scope check now blocks only paths matching AUTO_REVIEW_BLOCK_PATHS (or the built-in defaults). Remove this variable.",
     );
   }
-  // TY-266: build the policy from action inputs so consumers can reshape
-  // allowed prefixes / budgets / additional hard-block prefixes without
-  // forking. Empty / zero values fall back to DEFAULT_SCOPE_POLICY.
+  if (config.scopeAdditionalHardBlockPrefixes.length > 0) {
+    deps.warning(
+      `[scope-check] AUTO_REVIEW_SCOPE_ADDITIONAL_HARD_BLOCK_PREFIXES / scope-additional-hard-block-prefixes is deprecated (TY-271). Migrate to AUTO_REVIEW_BLOCK_PATHS, e.g. AUTO_REVIEW_BLOCK_PATHS="${config.scopeAdditionalHardBlockPrefixes.join(",")}".`,
+    );
+  }
+  if (config.hardBlockOverride.length > 0) {
+    deps.warning(
+      `[scope-check] AUTO_REVIEW_HARD_BLOCK_OVERRIDE / auto-review-hard-block-override is deprecated (TY-271). Migrate to AUTO_REVIEW_BLOCK_PATHS with the ! prefix, e.g. AUTO_REVIEW_BLOCK_PATHS="${config.hardBlockOverride.map((p) => `!${p}`).join(",")}".`,
+    );
+  }
+
+  const blockSpec = parseBlockPathsSpec(config.autoReviewBlockPaths);
+  for (const ignored of blockSpec.ignoredRemovals) {
+    deps.warning(
+      `[scope-check] AUTO_REVIEW_BLOCK_PATHS removal "!${ignored}" was ignored: .github/ is locked and cannot be unblocked.`,
+    );
+  }
+
   const scopePolicy = buildScopePolicy({
-    allowedPathPrefixes: config.scopeAllowedPathPrefixes,
+    blockPathsSpec: config.autoReviewBlockPaths,
     maxFiles: config.scopeMaxFiles > 0 ? config.scopeMaxFiles : undefined,
     maxLines: config.scopeMaxLines > 0 ? config.scopeMaxLines : undefined,
     additionalHardBlockPrefixes: config.scopeAdditionalHardBlockPrefixes,
     hardBlockOverride: config.hardBlockOverride,
   });
-  if (config.scopeAllowedPathPrefixes.length > 0) {
+
+  if (config.autoReviewBlockPaths !== "") {
     deps.info(
-      `[scope-check] allowed path prefixes (override): [${config.scopeAllowedPathPrefixes.join(", ")}]`,
+      `[scope-check] AUTO_REVIEW_BLOCK_PATHS: "${config.autoReviewBlockPaths}"`,
     );
   }
-  if (config.scopeAdditionalHardBlockPrefixes.length > 0) {
-    deps.info(
-      `[scope-check] additional hard-block prefixes: [${config.scopeAdditionalHardBlockPrefixes.join(", ")}]`,
-    );
-  }
+
   const scopeResult: ScopeCheckResult = checkScope(changedFiles, scopePolicy);
   if (!scopeResult.ok) {
     deps.warning(`[post-fix] Scope violation: ${scopeResult.message}`);
@@ -487,7 +598,7 @@ export async function runPostFix(
       inputs,
       state,
       stopReason: "scope_violation",
-      detail: scopeResult.message,
+      detail: formatScopeViolationDetail(scopeResult, scopePolicy.maxFiles, scopePolicy.maxLines),
     });
     return;
   }

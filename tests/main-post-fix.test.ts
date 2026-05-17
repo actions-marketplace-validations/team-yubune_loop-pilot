@@ -37,10 +37,11 @@ const baseConfig: Config = {
   claudeCodeModelEscalated: "claude-opus-4-7",
   autoMergeOnClean: false,
   severityThreshold: "P2",
-  hardBlockOverride: [],
-  scopeAllowedPathPrefixes: [],
+  autoReviewBlockPaths: "",
   scopeMaxFiles: 0,
   scopeMaxLines: 0,
+  hardBlockOverride: [],
+  scopeAllowedPathPrefixes: [],
   scopeAdditionalHardBlockPrefixes: [],
 };
 
@@ -493,11 +494,40 @@ describe("runPostFix", () => {
     );
   });
 
-  it("propagates hardBlockOverride into the scope check and logs the configured paths (TY-255)", async () => {
-    // `package.json` is hard-blocked by default. With the override active it
-    // should clear the hard-block check; here we still expect a stop because
-    // `package.json` is outside `allowedPathPrefixes` (override skips only
-    // the hard-block stage, by design).
+  it("AUTO_REVIEW_BLOCK_PATHS=!package.json lets package.json pass the scope check (TY-271)", async () => {
+    // The new block-list lets operators opt specific defaults out via `!path`.
+    // After the override, `package.json` is no longer blocked — the diff
+    // should reach CHECK_COMMAND and commit normally.
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T12:00:00Z",
+        state: makeState(),
+      },
+      {
+        gitDiffNumstat: () => "3\t1\tpackage.json\n",
+      },
+    );
+
+    await runPostFix(
+      { ...baseConfig, autoReviewBlockPaths: "!package.json" },
+      deps,
+      baseInputs,
+    );
+
+    expect(deps.info).toHaveBeenCalledWith(
+      '[scope-check] AUTO_REVIEW_BLOCK_PATHS: "!package.json"',
+    );
+    expect(deps.postStopComment).not.toHaveBeenCalled();
+    expect(deps.commitMessages.length).toBe(1);
+  });
+
+  it("legacy hardBlockOverride still works with a deprecation warning (TY-271)", async () => {
+    // Backward compat: AUTO_REVIEW_HARD_BLOCK_OVERRIDE values are folded
+    // into the new block-list as removals. Old repos keep working but get a
+    // warning telling them to migrate.
     const deps = makeDeps(
       {
         found: true,
@@ -517,38 +547,21 @@ describe("runPostFix", () => {
       baseInputs,
     );
 
-    expect(deps.info).toHaveBeenCalledWith(
-      "[scope-check] hard-block override paths: [package.json]",
+    const warnCalls = (deps.warning as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c: unknown[]) => String(c[0]),
     );
-    expect(deps.updateStateComment).toHaveBeenCalledWith(
-      "team-yubune",
-      "test-auto-ai-review",
-      100,
-      expect.objectContaining({
-        status: "stopped",
-        stopReason: "scope_violation",
-      }),
-      "github-token",
-      expect.any(Object),
-    );
-    // The reason must be `disallowed_path`, NOT `hard_block_path` — the
-    // override successfully skipped the hard-block stage.
-    expect(deps.postStopComment).toHaveBeenCalledWith(
-      "team-yubune",
-      "test-auto-ai-review",
-      99,
-      "scope_violation",
-      1234,
-      0,
-      expect.stringContaining("allow-list"),
-      "github-token",
-    );
+    expect(
+      warnCalls.some((m: string) =>
+        m.includes("AUTO_REVIEW_HARD_BLOCK_OVERRIDE") && m.includes("deprecated"),
+      ),
+    ).toBe(true);
+    expect(deps.postStopComment).not.toHaveBeenCalled();
+    expect(deps.commitMessages.length).toBe(1);
   });
 
-  it("still hard-blocks .github/ even when listed in hardBlockOverride (TY-255)", async () => {
-    // The CI-rewrite escape hatch must stay closed: even when ops put a
-    // `.github/` path in the override list, the scope check refuses it with
-    // `hard_block_path` rather than letting it through.
+  it("still hard-blocks .github/ even when AUTO_REVIEW_BLOCK_PATHS=!.github/... is set (TY-271)", async () => {
+    // .github/ is locked. The `!.github/...` removal is silently dropped,
+    // and the scope check refuses the diff with `hard_block_path`.
     const deps = makeDeps(
       {
         found: true,
@@ -565,12 +578,20 @@ describe("runPostFix", () => {
     await runPostFix(
       {
         ...baseConfig,
-        hardBlockOverride: [".github/workflows/auto-review-loop.yml"],
+        autoReviewBlockPaths: "!.github/workflows/auto-review-loop.yml",
       },
       deps,
       baseInputs,
     );
 
+    const warnCalls = (deps.warning as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c: unknown[]) => String(c[0]),
+    );
+    expect(
+      warnCalls.some((m: string) =>
+        m.includes(".github/") && m.includes("locked"),
+      ),
+    ).toBe(true);
     expect(deps.postStopComment).toHaveBeenCalledWith(
       "team-yubune",
       "test-auto-ai-review",
@@ -581,6 +602,32 @@ describe("runPostFix", () => {
       expect.stringContaining(".github/workflows/auto-review-loop.yml"),
       "github-token",
     );
+  });
+
+  it("scope_violation comment includes actionable AUTO_REVIEW_BLOCK_PATHS hint (TY-271)", async () => {
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T12:00:00Z",
+        state: makeState(),
+      },
+      {
+        gitDiffNumstat: () => "5\t0\tdist/post-fix/index.cjs\n",
+      },
+    );
+
+    await runPostFix(baseConfig, deps, baseInputs);
+
+    const stopCall = (
+      deps.postStopComment as ReturnType<typeof vi.fn>
+    ).mock.calls[0];
+    const detail = String(stopCall[6]);
+    expect(detail).toContain("dist/post-fix/index.cjs");
+    expect(detail).toContain("AUTO_REVIEW_BLOCK_PATHS");
+    expect(detail).toContain("!dist/");
+    expect(detail).toContain("docs/operations/scope-policy.md");
   });
 
   it("skips when state is no longer 'fixing' (manual intervention)", async () => {

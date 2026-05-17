@@ -1,0 +1,161 @@
+# Scope Policy — auto-fix の変更スコープ検査
+
+> claude-code-action が生成した diff を post-fix がどのように受け入れ / 拒否するかと、運用側で許可・禁止を調整する `AUTO_REVIEW_BLOCK_PATHS` Repository variable の仕様 (TY-271)。
+
+## 概要
+
+post-fix は `anthropics/claude-code-action@v1` の出力を `git diff --numstat HEAD` で確認し、以下のいずれかに該当した場合は **revert + `stop_reason: scope_violation`** で停止する。
+
+| reason | 条件 |
+|--------|------|
+| `path_traversal` | パスが絶対パス・`..` を含む（セキュリティ拒否、override 不可） |
+| `hard_block_path` | パスが block-list（default + `AUTO_REVIEW_BLOCK_PATHS`）にマッチ |
+| `binary_change` | numstat が `-`/`-`（バイナリ）。auto-fix では非対応 |
+| `too_many_files` | 変更ファイル数が `AUTO_REVIEW_SCOPE_MAX_FILES` 上限を超過（default 20） |
+| `too_many_lines` | 追加+削除行数が `AUTO_REVIEW_SCOPE_MAX_LINES` 上限を超過（default 1000） |
+
+allow-list は存在しない（TY-271）。block-list にマッチしないパスはすべて許可される。
+
+## Default block-list
+
+`src/scope-checker.ts` の `DEFAULT_BLOCK_PATTERNS` にハードコードされている。各エントリは「ディレクトリ prefix（末尾 `/`）」または「ファイル完全一致（末尾 `/` なし）」のいずれか。
+
+| path | 種別 | 解除可否 | 理由 |
+|------|------|---------|------|
+| `.github/` | dir | **locked**（解除不可） | workflow YAML を agent が書き換えると scope check 自体を内部から無効化できる（CI-rewrite escape hatch） |
+| `.husky/` | dir | 解除可 | pre-commit hook 経路 |
+| `.git-hooks/` | dir | 解除可 | git hook 経路 |
+| `hooks/` | dir | 解除可 | git hook 経路 |
+| `.devcontainer/` | dir | 解除可 | container 設定 |
+| `.vscode/` | dir | 解除可 | editor 設定 |
+| `.cursor/` | dir | 解除可 | editor 設定 |
+| `node_modules/` | dir | 解除可 | dependency 出力 |
+| `dist/` | dir | 解除可 | bundle 出力 |
+| `Makefile` | exact | 解除可 | CI 入口になりやすい |
+| `package.json` | exact | 解除可 | 依存追加で supply-chain 汚染 |
+| `package-lock.json` | exact | 解除可 | 依存追加で supply-chain 汚染 |
+| `tsconfig.json` | exact | 解除可 | tsc 設定 |
+| root dotfiles（`.gitignore` 等） | regex (`^\.[^/]+$`) | 個別解除可 | ルート設定ファイル全般 |
+
+`.github/` 以外はリポジトリ運用方針次第で `AUTO_REVIEW_BLOCK_PATHS` から `!path` で解除できる。
+
+## `AUTO_REVIEW_BLOCK_PATHS` syntax
+
+`.gitignore` 風のカンマ区切り spec。前後の空白はトリムし、空エントリは捨てる。
+
+| エントリ形式 | 意味 |
+|------------|------|
+| `secrets/` | ディレクトリ prefix block を追加（`secrets/foo.txt` も block） |
+| `Justfile` | ファイル完全一致 block を追加（`Justfile.bak` は無関係） |
+| `!Makefile` | default block から exact 一致を解除 |
+| `!dist/` | default block から dir prefix を解除 |
+| `!.github/...` | **無視される**（警告ログ）。`.github/` は locked |
+
+### 解決順序
+
+`buildScopePolicy()` は以下の順で最終 block-list を構築する:
+
+1. `DEFAULT_BLOCK_PATTERNS` から start（`.github/` は locked）
+2. spec の `!path` で「path 完全一致」する default を取り除く（locked は対象外）
+3. spec の `path` を追加
+
+### 典型ユースケース
+
+**1. デフォルトのまま（推奨）**
+
+```
+AUTO_REVIEW_BLOCK_PATHS = (未設定)
+```
+
+`src/`, `tests/`, `docs/`, `loop/`, `README.md`, `scripts/` 等すべて auto-fix 可能。`.github/`, `dist/`, `package.json`, `tsconfig.json` 等のセンシティブ領域は block。
+
+**2. `dist/` を auto-fix 対象にする（bundle を loop で再生成したい）**
+
+```
+AUTO_REVIEW_BLOCK_PATHS = !dist/
+```
+
+`dist/` 配下の `.cjs` / `.map` を Claude が書き換え可能になる。Codex が「bundle が古い」と指摘するケース等で利用。
+
+**3. 機密ディレクトリを明示的に追加**
+
+```
+AUTO_REVIEW_BLOCK_PATHS = secrets/,infra/terraform/,!Makefile
+```
+
+`secrets/`, `infra/terraform/` を block しつつ、デフォルトでは block されていた `Makefile` を解除。
+
+## サイズ上限のカスタマイズ
+
+| variable | input | default |
+|----------|-------|---------|
+| `AUTO_REVIEW_SCOPE_MAX_FILES` | `scope-max-files` | 20 |
+| `AUTO_REVIEW_SCOPE_MAX_LINES` | `scope-max-lines` | 1000 |
+
+`0` または空文字を渡すとデフォルトが使われる。action input を `"0"` 明示すると `core.getInput` が「設定済み」と解釈して Repository variable のフォールバックを上書きしてしまうため、Repository variable 主導で運用する場合は input を空のまま（`with:` で渡さない / 空文字を渡す）にする。
+
+## scope_violation 時の停止コメント
+
+post-fix は違反種別ごとに actionable な `Detail:` を生成する。
+
+### `hard_block_path`
+
+```
+Detail: Auto-fix touched paths blocked by the scope check.
+
+Affected paths:
+  - dist/post-fix/index.cjs
+
+To let Claude edit these paths, add the matching `!` entries to the
+`AUTO_REVIEW_BLOCK_PATHS` Repository variable:
+
+  AUTO_REVIEW_BLOCK_PATHS = "!dist/"
+
+(If the variable is already set, append the new entries with a comma.)
+
+See docs/operations/scope-policy.md.
+```
+
+`.github/` がマッチした場合は加えて「locked であり解除不可、手動修正が必要」が表示される。
+
+### `too_many_files` / `too_many_lines`
+
+`AUTO_REVIEW_SCOPE_MAX_FILES` / `AUTO_REVIEW_SCOPE_MAX_LINES` での上限引き上げ手順を案内する。
+
+### `binary_change`
+
+「auto-fix は binary を扱えない、手動修正してほしい」を明示。
+
+### `path_traversal`
+
+「セキュリティ拒否であり override 不可」を明示。
+
+## 旧 variable の deprecation（TY-271）
+
+以下の 3 変数は deprecated。設定されていたら post-fix 起動時に warning ログを出し、旧仕様で受け入れる。**次マイナーで削除予告**。
+
+| 旧 variable | 旧 input | 移行先 |
+|-------------|---------|--------|
+| `AUTO_REVIEW_SCOPE_ALLOWED_PATH_PREFIXES` | `scope-allowed-path-prefixes` | **撤廃** — allow-list 概念自体が無くなった。block-list に書き換える必要なし（block されていないパスは全て許可される） |
+| `AUTO_REVIEW_SCOPE_ADDITIONAL_HARD_BLOCK_PREFIXES` | `scope-additional-hard-block-prefixes` | `AUTO_REVIEW_BLOCK_PATHS` に追記。例: `AUTO_REVIEW_BLOCK_PATHS="scripts/,Justfile"` |
+| `AUTO_REVIEW_HARD_BLOCK_OVERRIDE` | `auto-review-hard-block-override` | `AUTO_REVIEW_BLOCK_PATHS` の `!` 構文。例: `AUTO_REVIEW_BLOCK_PATHS="!package.json,!tsconfig.json"` |
+
+`AUTO_REVIEW_SCOPE_MAX_FILES` / `AUTO_REVIEW_SCOPE_MAX_LINES` は block-list とは直交するため**存続**する。
+
+### Migration ガイド
+
+旧運用と等価な新運用への 1:1 マッピング:
+
+| 旧設定 | 新設定 |
+|--------|--------|
+| `AUTO_REVIEW_HARD_BLOCK_OVERRIDE=package.json,tsconfig.json` | `AUTO_REVIEW_BLOCK_PATHS=!package.json,!tsconfig.json` |
+| `AUTO_REVIEW_SCOPE_ADDITIONAL_HARD_BLOCK_PREFIXES=secrets/,Justfile` | `AUTO_REVIEW_BLOCK_PATHS=secrets/,Justfile` |
+| 両方併用 | `AUTO_REVIEW_BLOCK_PATHS=!package.json,!tsconfig.json,secrets/,Justfile` |
+| `AUTO_REVIEW_SCOPE_ALLOWED_PATH_PREFIXES=src/,tests/,docs/,packages/` | （削除のみ。block-list 化により不要） |
+
+## 関連
+
+- 実装: `src/scope-checker.ts`（`parseBlockPathsSpec`, `buildScopePolicy`, `checkScope`）
+- post-fix 配線: `src/main-post-fix.ts`（`formatScopeViolationDetail`）
+- セキュリティ運用全般: [security.md](security.md)
+- 停止条件とリカバリ: [stop-and-recovery.md](stop-and-recovery.md)

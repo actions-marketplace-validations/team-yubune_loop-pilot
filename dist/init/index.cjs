@@ -19186,10 +19186,11 @@ function loadBaseConfig() {
     claudeCodeModelEscalated: input("claude-code-model-escalated", "CLAUDE_CODE_MODEL_ESCALATED", DEFAULT_CLAUDE_CODE_MODEL_ESCALATED),
     autoMergeOnClean: boolInput("auto-merge-on-clean", "AUTO_REVIEW_AUTO_MERGE", false),
     severityThreshold: severityThresholdInput("severity-threshold", "AUTO_REVIEW_SEVERITY_THRESHOLD", DEFAULT_SEVERITY_THRESHOLD),
-    hardBlockOverride: stringListInput("auto-review-hard-block-override", "AUTO_REVIEW_HARD_BLOCK_OVERRIDE"),
-    scopeAllowedPathPrefixes: stringListInput("scope-allowed-path-prefixes", "AUTO_REVIEW_SCOPE_ALLOWED_PATH_PREFIXES"),
+    autoReviewBlockPaths: input("auto-review-block-paths", "AUTO_REVIEW_BLOCK_PATHS", ""),
     scopeMaxFiles: intInput("scope-max-files", "AUTO_REVIEW_SCOPE_MAX_FILES", 0),
     scopeMaxLines: intInput("scope-max-lines", "AUTO_REVIEW_SCOPE_MAX_LINES", 0),
+    hardBlockOverride: stringListInput("auto-review-hard-block-override", "AUTO_REVIEW_HARD_BLOCK_OVERRIDE"),
+    scopeAllowedPathPrefixes: stringListInput("scope-allowed-path-prefixes", "AUTO_REVIEW_SCOPE_ALLOWED_PATH_PREFIXES"),
     scopeAdditionalHardBlockPrefixes: stringListInput("scope-additional-hard-block-prefixes", "AUTO_REVIEW_SCOPE_ADDITIONAL_HARD_BLOCK_PREFIXES")
   };
 }

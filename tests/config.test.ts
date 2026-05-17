@@ -189,12 +189,13 @@ describe("loadInitConfig — integer input range validation (TY-267 #15)", () =>
   });
 });
 
-describe("loadInitConfig — scope policy env-var fallback (TY-266 Codex follow-up)", () => {
+describe("loadInitConfig — scope policy env-var fallback", () => {
   let restore: (() => void) | null = null;
 
   beforeEach(() => {
     restore = withEnv({
       ...REQUIRED_ENV,
+      AUTO_REVIEW_BLOCK_PATHS: undefined,
       AUTO_REVIEW_SCOPE_MAX_FILES: undefined,
       AUTO_REVIEW_SCOPE_MAX_LINES: undefined,
       AUTO_REVIEW_SCOPE_ALLOWED_PATH_PREFIXES: undefined,
@@ -207,8 +208,9 @@ describe("loadInitConfig — scope policy env-var fallback (TY-266 Codex follow-
     restore = null;
   });
 
-  it("falls back to 0 when both action input and Repository variable are unset", () => {
+  it("falls back to default sentinel values when no variables are set", () => {
     const config = loadInitConfig();
+    expect(config.autoReviewBlockPaths).toBe("");
     expect(config.scopeMaxFiles).toBe(0);
     expect(config.scopeMaxLines).toBe(0);
     expect(config.scopeAllowedPathPrefixes).toEqual([]);
@@ -228,12 +230,27 @@ describe("loadInitConfig — scope policy env-var fallback (TY-266 Codex follow-
     expect(config.scopeMaxLines).toBe(250);
   });
 
-  it("reads AUTO_REVIEW_SCOPE_ALLOWED_PATH_PREFIXES / _ADDITIONAL_HARD_BLOCK_PREFIXES from env", () => {
+  it("reads the AUTO_REVIEW_BLOCK_PATHS spec verbatim (TY-271)", () => {
+    process.env.AUTO_REVIEW_BLOCK_PATHS = "secrets/,!Makefile,Justfile";
+
+    const config = loadInitConfig();
+
+    // The raw spec is forwarded as-is; `parseBlockPathsSpec` interprets it
+    // in scope-checker. Storing the raw string keeps the config layer free
+    // of parsing concerns and lets main-post-fix re-emit it in the warning
+    // for `!.github/...` rejections.
+    expect(config.autoReviewBlockPaths).toBe("secrets/,!Makefile,Justfile");
+  });
+
+  it("still reads the deprecated AUTO_REVIEW_SCOPE_ALLOWED_PATH_PREFIXES / _ADDITIONAL_HARD_BLOCK_PREFIXES (TY-271 deprecation)", () => {
     process.env.AUTO_REVIEW_SCOPE_ALLOWED_PATH_PREFIXES = "packages/,apps/";
     process.env.AUTO_REVIEW_SCOPE_ADDITIONAL_HARD_BLOCK_PREFIXES = "scripts/,Justfile";
 
     const config = loadInitConfig();
 
+    // Config still parses the deprecated values so main-post-fix can emit
+    // the deprecation warning at run time. The actual behavioural fold-in
+    // happens in `buildScopePolicy`.
     expect(config.scopeAllowedPathPrefixes).toEqual(["packages/", "apps/"]);
     expect(config.scopeAdditionalHardBlockPrefixes).toEqual(["scripts/", "Justfile"]);
   });

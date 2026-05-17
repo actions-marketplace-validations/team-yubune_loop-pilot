@@ -49,24 +49,28 @@ inputs:
     description: "Repository in owner/name format (auto-detected in GitHub Actions)"
     required: false
     default: ""
-  auto-review-hard-block-override:
-    description: "Comma-separated repo-relative paths to opt out of the hard-block list (TY-255). Example: 'package.json,tsconfig.json'. Paths under '.github/' are always blocked even when listed here."
-    required: false
-    default: ""
-  scope-allowed-path-prefixes:
-    description: "Comma-separated path prefixes the post-fix scope check accepts (TY-266 #7). Example: 'src/,tests/,docs/,packages/'. Empty default keeps src/ + tests/ + docs/."
+  auto-review-block-paths:
+    description: "`.gitignore`-style block-path spec (TY-271). Comma-separated entries: `secrets/` (dir prefix), `Justfile` (exact file), `!Makefile` (un-block a default). `!.github/...` is ignored — `.github/` is locked. Empty default keeps the built-in `DEFAULT_BLOCK_PATTERNS`. See docs/operations/scope-policy.md."
     required: false
     default: ""
   scope-max-files:
-    description: "Max files allowed in a single auto-fix diff (TY-266 #7). Empty / 0 keeps the default of 20. Leave empty so `AUTO_REVIEW_SCOPE_MAX_FILES` Repository variable can override; `core.getInput` treats `\"0\"` as non-empty and would shadow the env-var fallback."
+    description: "Max files allowed in a single auto-fix diff. Empty / 0 keeps the default of 20. Leave empty so `AUTO_REVIEW_SCOPE_MAX_FILES` Repository variable can override; `core.getInput` treats `\"0\"` as non-empty and would shadow the env-var fallback."
     required: false
     default: ""
   scope-max-lines:
-    description: "Max total added+deleted lines allowed in a single auto-fix diff (TY-266 #7). Empty / 0 keeps the default of 1000. Leave empty so `AUTO_REVIEW_SCOPE_MAX_LINES` Repository variable can override."
+    description: "Max total added+deleted lines allowed in a single auto-fix diff. Empty / 0 keeps the default of 1000. Leave empty so `AUTO_REVIEW_SCOPE_MAX_LINES` Repository variable can override."
+    required: false
+    default: ""
+  auto-review-hard-block-override:
+    description: "[DEPRECATED — TY-271, removed in next minor] Use `auto-review-block-paths` with the `!path` syntax. Existing values are folded into the new spec as removals, but emit a warning."
+    required: false
+    default: ""
+  scope-allowed-path-prefixes:
+    description: "[DEPRECATED — TY-271, removed in next minor] The allow-list concept is gone; values are ignored with a warning. The scope check is now a pure block-list."
     required: false
     default: ""
   scope-additional-hard-block-prefixes:
-    description: "Comma-separated extra hard-block prefixes (TY-266 #8) to augment the defaults. Trailing slash → directory (`.scripts/`); no trailing slash → exact file match (`Justfile`)."
+    description: "[DEPRECATED — TY-271, removed in next minor] Use `auto-review-block-paths` instead. Existing values are folded into the new spec as additions, but emit a warning."
     required: false
     default: ""
 

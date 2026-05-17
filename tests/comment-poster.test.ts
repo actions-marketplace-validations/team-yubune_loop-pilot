@@ -195,7 +195,7 @@ describe("terminal poster wiring (TY-259)", () => {
     const { body } = expectPostCommentInvocation(mockedGhApi.mock.calls[0]);
     expect(body).toContain("Auto-review stopped");
     expect(body).toContain(
-      "repair touched paths or exceeded the size budget allowed for auto-fix",
+      "Auto-fix blocked — the repair diff touched protected paths.",
     );
     expect(body).toContain("Open in-scope findings remaining: 3");
   });

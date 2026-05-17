@@ -339,53 +339,17 @@ git log
 
 ### 変更スコープ検査（post-fix）
 
-claude-code-action 実行後、workflow 側で diff を検査し、以下のいずれかを満たさない場合は **revert + `stop_reason: scope_violation`**。
+claude-code-action 実行後、workflow 側で diff を検査し、block-list にマッチした場合・サイズ上限を超えた場合・バイナリ変更がある場合は **revert + `stop_reason: scope_violation`** で停止する。
 
-| 項目 | デフォルト上限 / 規則 | 上書き input |
-|------|----------------------|--------------|
-| changed files | `≤ 20` | `scope-max-files` (TY-266) |
-| changed lines（追加+削除） | `≤ 1000` | `scope-max-lines` (TY-266) |
-| allowed paths | `src/`, `tests/`, `docs/` のみ | `scope-allowed-path-prefixes` (TY-266) |
-| **hard block paths**（変更があれば即 violation） | `.github/`, `node_modules/`, `dist/`, `package.json`, `package-lock.json`, `tsconfig.json`, `.husky/`, `.devcontainer/`, `.vscode/`, `.cursor/`, `.git-hooks/`, `hooks/`, `Makefile`, root dotfiles 一式 (TY-266 #8) | `scope-additional-hard-block-prefixes` で追加、`auto-review-hard-block-override` で除外 |
+TY-271 で **block-list 方式** に統一された（旧 allow-list は撤廃）。block されていないパスはすべて許可される。
 
-`.github/` を hard block するのは privilege escalation（workflow 経由で secrets 漏洩や任意コード実行が可能になる）の入口を塞ぐため。`package.json` / `package-lock.json` を hard block するのは依存追加による供給チェーン汚染防止。`.husky/` / `.git-hooks/` / `hooks/` は pre-commit hook の経路、`.vscode/` / `.cursor/` / `.devcontainer/` は editor / container 設定、`Makefile` は CI 入口として副作用範囲が大きいため hard block 対象に含めている (TY-266 #8)。これらの変更が必要な repair は **手動対応** として PR コメントで報告する（または下記の Hard-block override で path 単位に opt-in する）。
+詳細仕様・運用カスタマイズ・旧変数 deprecation のマイグレーションは [scope-policy.md](scope-policy.md) を参照する。
 
-#### policy のカスタマイズ（TY-266 #7）
+セキュリティ上のキーポイントだけここに残す:
 
-`auto-review-action/loop` を他リポジトリで再利用する場合、`src/` / `tests/` / `docs/` というディレクトリ layout が一致しない可能性がある。以下の action input / Repository variable で scope policy を上書きできる:
-
-| input | env (Repository variable) | 役割 |
-|-------|---------------------------|------|
-| `scope-allowed-path-prefixes` | `AUTO_REVIEW_SCOPE_ALLOWED_PATH_PREFIXES` | allow-list の差し替え。例: `src/,tests/,docs/,packages/` |
-| `scope-max-files` | `AUTO_REVIEW_SCOPE_MAX_FILES` | ファイル数上限。空文字 / `0` / 未設定はデフォルト 20。**action input を `"0"` で明示すると Repository variable のフォールバックを上書きしてしまう** ため、Repository variable 主導で運用する場合は input を空のまま (`with:` で渡さない / 空文字を渡す) にする |
-| `scope-max-lines` | `AUTO_REVIEW_SCOPE_MAX_LINES` | 行数上限。空文字 / `0` / 未設定はデフォルト 1000。`scope-max-files` と同じ注意点 |
-| `scope-additional-hard-block-prefixes` | `AUTO_REVIEW_SCOPE_ADDITIONAL_HARD_BLOCK_PREFIXES` | hard-block の追加。trailing slash 付きはディレクトリ prefix (`.scripts/`)、無しは exact file (`Justfile`) |
-
-未設定 / 空の場合はすべてデフォルトを維持するため、後方互換性が保たれる。`scope-additional-hard-block-prefixes` は既存のデフォルト hard-block を弱められない（デフォルトはそのまま残し、上に追加するだけ）。
-
-#### Hard-block override の運用（TY-255）
-
-リポジトリ運用で `package.json` / `tsconfig.json` 等の hard-block 対象パスに対する Claude 自動修正を許可したい場合は、Repository variable `AUTO_REVIEW_HARD_BLOCK_OVERRIDE` を設定する。**デフォルト（未設定）では従来通り全 hard-block を維持**するため、未設定の repo は挙動が変わらない。
-
-**指定方法:**
-- カンマ区切りで「hard-block から除外する repo-relative path」を列挙する
-- 例: `AUTO_REVIEW_HARD_BLOCK_OVERRIDE=package.json,tsconfig.json`
-- 前後の空白はトリムされ、空エントリは無視される
-- マッチは **path の完全一致**（prefix ではない）。`package` だけ書いても `package.json` は通らない
-
-**動作:**
-- 指定されたパスは hard-block 判定をスキップし、`allowedPathPrefixes` チェックに進む
-  - つまり override に入れただけでは通らない。`package.json` を実際に repair 対象にするには `src/`, `tests/`, `docs/` といった既存 allow-list ではマッチしないので、運用上は「override 経由で hard-block を解除しつつ、allow-list 側でも明示的にパスを通す」拡張が必要なケースが多い
-- override に含まれない hard-block パスは引き続きブロック
-- post-fix 起動時に `[scope-check] hard-block override paths: [...]` の 1 行ログを出力し、何を解除しているかを Actions ログに残す
-
-**固定で常に block するパス:**
-- **`.github/` 以下のパスは override に含めても常に block される**。workflow YAML を agent が書き換えられると scope check 自体を内部から無効化できてしまう（CI rewrite escape hatch）ため、本機構ではこの境界を固定としている。`.github/` を agent に編集させたい場合は本機構の範囲外で、別途仕組みが必要
-
-**安全運用の指針:**
-- 必要最小限のパスのみ追加する。`package-lock.json` を入れると依存ツリー全体の改変経路になる点に注意
-- 設定変更は audit log に残るように Repository variable で管理する（PR ラベル等での動的 override は本機構には含めない）
-- override 設定後は Actions ログの `[scope-check] hard-block override paths: ...` 行を最初の run で確認し、意図した値が反映されているかを目視確認する
+- `.github/` は **locked**（`AUTO_REVIEW_BLOCK_PATHS=!.github/...` も無視）。workflow YAML を agent が書き換えられると scope check 自体を内部から無効化できる（CI-rewrite escape hatch）ため
+- それ以外の default block（`dist/`, `package.json`, `package-lock.json`, `tsconfig.json`, `.husky/`, `.git-hooks/`, `hooks/`, `.devcontainer/`, `.vscode/`, `.cursor/`, `node_modules/`, `Makefile`, root dotfiles）はリポジトリ運用方針次第で `AUTO_REVIEW_BLOCK_PATHS=!path` で解除可能
+- 解除運用は audit log として残るよう Repository variable で管理し、PR ラベル等での動的 override は導入しない
 
 ### Secrets / token / workflow permissions
 

@@ -52,25 +52,32 @@ export interface BaseConfig {
   // logs. Default `P2` preserves prior behavior. Invalid values fall back to `P2`
   // with a warning.
   severityThreshold: Severity;
-  // Hard-block path override (TY-255). Comma-separated repo-relative paths
-  // that opt out of `DEFAULT_SCOPE_POLICY.hardBlockPatterns` so claude-code-action
-  // is allowed to touch them (e.g., `package.json,tsconfig.json`). Empty default
-  // keeps the strict security boundary; paths under `.github/` are always blocked
-  // regardless of this list, since CI rewrites would defeat the scope check.
-  hardBlockOverride: readonly string[];
-  // Scope-checker policy overrides (TY-266 #7). All optional; empty values
-  // fall back to `DEFAULT_SCOPE_POLICY`. Letting downstream repos reshape the
-  // policy via Repository variables means the action can be reused on
-  // layouts other than `src/` / `tests/` / `docs/` without forking.
-  // - scopeAllowedPathPrefixes: replaces the allow-list when non-empty.
-  // - scopeMaxFiles / scopeMaxLines: 0 means "use default".
-  // - scopeAdditionalHardBlockPrefixes: augments the default hard-block set
-  //   with extra path prefixes (trailing slash → directory prefix; no slash →
-  //   exact file match). Cannot weaken existing blocks; that is what
-  //   `hardBlockOverride` is for.
-  scopeAllowedPathPrefixes: readonly string[];
+  // Block-list spec (TY-271). `.gitignore`-style syntax forwarded raw to
+  // `parseBlockPathsSpec` in scope-checker.ts. Empty default keeps the
+  // built-in `DEFAULT_BLOCK_PATTERNS` intact.
+  //   AUTO_REVIEW_BLOCK_PATHS = "secrets/,infra/,!Makefile,!package.json"
+  //   - trailing `/` → directory prefix block
+  //   - no trailing `/` → exact file block
+  //   - leading `!`    → remove the matching default
+  //   - `!.github/...` is silently ignored (locked)
+  autoReviewBlockPaths: string;
   scopeMaxFiles: number;
   scopeMaxLines: number;
+  /**
+   * @deprecated TY-271. Folded into the block-list as removals (legacy
+   * `!path` shape). Emit a warning when set and migrate the operator to
+   * `AUTO_REVIEW_BLOCK_PATHS`. Removed in the next minor.
+   */
+  hardBlockOverride: readonly string[];
+  /**
+   * @deprecated TY-271. The allow-list concept is gone; values are accepted
+   * but ignored with a warning. Removed in the next minor.
+   */
+  scopeAllowedPathPrefixes: readonly string[];
+  /**
+   * @deprecated TY-271. Folded into the block-list as additions. Removed
+   * in the next minor.
+   */
   scopeAdditionalHardBlockPrefixes: readonly string[];
 }
 
@@ -208,6 +215,13 @@ function loadBaseConfig(): BaseConfig {
       "AUTO_REVIEW_SEVERITY_THRESHOLD",
       DEFAULT_SEVERITY_THRESHOLD,
     ),
+    autoReviewBlockPaths: input(
+      "auto-review-block-paths",
+      "AUTO_REVIEW_BLOCK_PATHS",
+      "",
+    ),
+    scopeMaxFiles: intInput("scope-max-files", "AUTO_REVIEW_SCOPE_MAX_FILES", 0),
+    scopeMaxLines: intInput("scope-max-lines", "AUTO_REVIEW_SCOPE_MAX_LINES", 0),
     hardBlockOverride: stringListInput(
       "auto-review-hard-block-override",
       "AUTO_REVIEW_HARD_BLOCK_OVERRIDE",
@@ -216,8 +230,6 @@ function loadBaseConfig(): BaseConfig {
       "scope-allowed-path-prefixes",
       "AUTO_REVIEW_SCOPE_ALLOWED_PATH_PREFIXES",
     ),
-    scopeMaxFiles: intInput("scope-max-files", "AUTO_REVIEW_SCOPE_MAX_FILES", 0),
-    scopeMaxLines: intInput("scope-max-lines", "AUTO_REVIEW_SCOPE_MAX_LINES", 0),
     scopeAdditionalHardBlockPrefixes: stringListInput(
       "scope-additional-hard-block-prefixes",
       "AUTO_REVIEW_SCOPE_ADDITIONAL_HARD_BLOCK_PREFIXES",

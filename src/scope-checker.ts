@@ -1,13 +1,27 @@
 /**
- * Diff-scope validation for claude-code-action outputs.
+ * Diff-scope validation for claude-code-action outputs (TY-271).
  *
  * After `anthropics/claude-code-action@v1` finishes editing the repo, the
  * workflow runs this check against `git diff --numstat HEAD` (or equivalent)
  * to confirm the agent stayed within the policy defined in
- * `docs/operations/security.md` ("Claude Code Action 実行制御" / 変更スコープ検査).
+ * `docs/operations/scope-policy.md`.
  *
  * Violations cause the post-fix step to revert and stop with
  * `stop_reason: scope_violation`.
+ *
+ * # Block-list semantics
+ *
+ * The scope check is a pure block-list: every changed path is allowed unless
+ * it matches a configured block pattern. There is no allow-list — operators
+ * who need to forbid additional paths add them via `AUTO_REVIEW_BLOCK_PATHS`.
+ *
+ * Block patterns come from two sources:
+ *   1. `DEFAULT_BLOCK_PATTERNS` — built-in defaults whose contents would let
+ *      a repair re-enable arbitrary execution or rewrite CI / dependency
+ *      surface. `.github/` is marked `locked` and cannot be unblocked.
+ *   2. The repo-level `AUTO_REVIEW_BLOCK_PATHS` spec — `.gitignore`-style
+ *      syntax (`secrets/`, `Justfile`, `!Makefile`) that either adds entries
+ *      or removes entries from the defaults via the `!` prefix.
  */
 
 export interface ChangedFile {
@@ -19,118 +33,240 @@ export interface ChangedFile {
   deleted: number;
 }
 
+/**
+ * A block pattern matches either a directory prefix (trailing slash) or an
+ * exact file path.
+ */
+export interface BlockPattern {
+  /** The path as written: `secrets/` for a directory, `Makefile` for exact. */
+  readonly path: string;
+  /** True iff `path` ends with `/`. */
+  readonly isDirectory: boolean;
+  /**
+   * When true, the pattern cannot be removed via `!path` in the user spec.
+   * Only `.github/` is locked by default (CI-rewrite escape hatch).
+   */
+  readonly locked: boolean;
+}
+
 export interface ScopeCheckPolicy {
   maxFiles: number;
   maxLines: number;
   /**
-   * A path is in scope if it starts with one of these prefixes
-   * (after the hard-block check). Use trailing slashes (`src/`).
+   * Final, merged block patterns. The post-fix step rejects any changed path
+   * whose value matches one of these patterns (directory prefix or exact file).
    */
-  allowedPathPrefixes: readonly string[];
+  blockPatterns: readonly BlockPattern[];
   /**
-   * Patterns matched against the full path. Any hit is a hard
-   * block, regardless of allowedPathPrefixes.
+   * Root dotfiles explicitly unblocked via `!.gitignore`-style removals.
+   * When a path matches `ROOT_DOTFILE_RE` and is present here it is allowed
+   * instead of hard-blocked.
    */
-  hardBlockPatterns: readonly RegExp[];
-  /**
-   * Repo-relative paths (exact match against `file.path`) that opt out of
-   * `hardBlockPatterns` (TY-255). Used when ops explicitly want to let
-   * claude-code-action touch `package.json` / `tsconfig.json` etc. Default
-   * `[]` keeps the strict boundary intact.
-   *
-   * `.github/` paths are always blocked even when listed here, because
-   * CI rewrites would let an agent disable the rest of the scope check
-   * from inside the diff itself.
-   */
-  hardBlockOverride: readonly string[];
+  exemptedRootDotfiles?: ReadonlySet<string>;
 }
 
 /**
- * Default hard-block patterns. Includes CI / editor / hook directories
- * (TY-266 #8) whose contents can re-enable arbitrary execution on the runner
- * or in developer machines if rewritten by auto-fix. `.husky/` and `hooks/`
- * are pre-commit hook entry points; `.devcontainer/`, `.vscode/`, `.cursor/`
- * configure editor / container behaviour; `Makefile` is often the entry
- * point for CI commands like `make check`.
+ * Built-in block defaults. Only `.github/` is locked: rewriting workflow YAML
+ * would let an agent disable the rest of the scope check from inside its own
+ * diff. The rest are overridable via `AUTO_REVIEW_BLOCK_PATHS=!<path>` so
+ * operators can opt specific paths in (e.g. `!dist/` for vendored bundles
+ * the loop is expected to regenerate).
  */
-export const DEFAULT_HARD_BLOCK_PATTERNS: readonly RegExp[] = [
-  /^\.github\//,
-  /^node_modules\//,
-  /^dist\//,
-  /^package\.json$/,
-  /^package-lock\.json$/,
-  /^tsconfig\.json$/,
-  /^\.husky\//,
-  /^\.devcontainer\//,
-  /^\.vscode\//,
-  /^\.cursor\//,
-  /^\.git-hooks\//,
-  /^hooks\//,
-  /^Makefile$/,
-  /^\.[^/]+$/,
+export const DEFAULT_BLOCK_PATTERNS: readonly BlockPattern[] = [
+  { path: ".github/", isDirectory: true, locked: true },
+  { path: ".husky/", isDirectory: true, locked: false },
+  { path: ".git-hooks/", isDirectory: true, locked: false },
+  { path: "hooks/", isDirectory: true, locked: false },
+  { path: ".devcontainer/", isDirectory: true, locked: false },
+  { path: ".vscode/", isDirectory: true, locked: false },
+  { path: ".cursor/", isDirectory: true, locked: false },
+  { path: "node_modules/", isDirectory: true, locked: false },
+  { path: "dist/", isDirectory: true, locked: false },
+  { path: "Makefile", isDirectory: false, locked: false },
+  { path: "package.json", isDirectory: false, locked: false },
+  { path: "package-lock.json", isDirectory: false, locked: false },
+  { path: "tsconfig.json", isDirectory: false, locked: false },
 ];
+
+/**
+ * Matches any single-segment root dotfile (`.gitignore`, `.editorconfig`,
+ * `.nvmrc`, …). Not part of `DEFAULT_BLOCK_PATTERNS` because it's a wildcard
+ * that needs regex evaluation; tracked separately and overridable per-file
+ * via `AUTO_REVIEW_BLOCK_PATHS=!.gitignore` etc.
+ */
+const ROOT_DOTFILE_RE = /^\.[^/]+$/;
 
 export const DEFAULT_SCOPE_POLICY: ScopeCheckPolicy = {
   maxFiles: 20,
   maxLines: 1000,
-  allowedPathPrefixes: ["src/", "tests/", "docs/"],
-  hardBlockPatterns: DEFAULT_HARD_BLOCK_PATTERNS,
-  hardBlockOverride: [],
+  blockPatterns: DEFAULT_BLOCK_PATTERNS,
+  exemptedRootDotfiles: new Set(),
 };
 
 /**
- * Build a `ScopeCheckPolicy` from action-input style overrides (TY-266 #7).
+ * Parsed `AUTO_REVIEW_BLOCK_PATHS` spec. `additions` are appended to the
+ * block list; `removals` are deleted from it (matched literally against
+ * `BlockPattern.path`, including the trailing slash for directories).
  *
- * Defaults match `DEFAULT_SCOPE_POLICY`. Callers can:
- *   - swap the allowed prefix list wholesale via `allowedPathPrefixes`
- *   - tune the file / line budgets via `maxFiles` / `maxLines`
- *   - augment (not replace) the hard-block set via
- *     `additionalHardBlockPrefixes` (plain path prefixes converted to anchored
- *     regexes — keeps the input schema simple so users don't author regex
- *     fragments via Repository variables)
- *   - opt specific paths out of the hard-block via `hardBlockOverride`
+ * `!.github/...` entries are dropped during parsing — the lock guarantees
+ * that the corresponding pattern would survive removal anyway, but dropping
+ * them up front lets the warning surface at the policy boundary instead of
+ * being silently ignored inside `buildScopePolicy`.
  */
+export interface BlockPathsSpec {
+  additions: BlockPattern[];
+  removals: BlockPattern[];
+  /** Entries that targeted a locked pattern (`!.github/...`) and were ignored. */
+  ignoredRemovals: string[];
+}
+
+/**
+ * Parse a `.gitignore`-style block-paths spec.
+ *
+ * Syntax:
+ *   - Comma-separated entries; surrounding whitespace trimmed; blank entries
+ *     dropped.
+ *   - Trailing `/` → directory prefix (`secrets/`).
+ *   - No trailing `/` → exact file match (`Justfile`).
+ *   - Leading `!` → remove from defaults (`!Makefile`). The `!.github/...`
+ *     form is dropped and recorded in `ignoredRemovals` so the caller can
+ *     warn the operator.
+ */
+export function parseBlockPathsSpec(raw: string): BlockPathsSpec {
+  const spec: BlockPathsSpec = {
+    additions: [],
+    removals: [],
+    ignoredRemovals: [],
+  };
+  if (raw === "") return spec;
+
+  for (const rawEntry of raw.split(",")) {
+    const entry = rawEntry.trim();
+    if (entry.length === 0) continue;
+
+    const isRemoval = entry.startsWith("!");
+    const rawPath = isRemoval ? entry.slice(1).trim() : entry;
+    // Strip a leading `/` so operators can write `/secrets/` or `!/dist/`
+    // following .gitignore conventions; repo-relative paths have no leading slash.
+    const path = rawPath.startsWith("/") ? rawPath.slice(1) : rawPath;
+    if (path.length === 0) continue;
+
+    const pattern: BlockPattern = {
+      path,
+      isDirectory: path.endsWith("/"),
+      locked: false,
+    };
+
+    if (isRemoval) {
+      // `.github/` is the only locked default; refuse to remove it (or any
+      // path under it, since `.github/workflows/foo.yml` would otherwise
+      // sidestep the lock by being added through `!`).
+      if (path === ".github/" || path.startsWith(".github/")) {
+        spec.ignoredRemovals.push(path);
+        continue;
+      }
+      spec.removals.push(pattern);
+    } else {
+      spec.additions.push(pattern);
+    }
+  }
+
+  return spec;
+}
+
 export interface ScopePolicyOverrides {
-  allowedPathPrefixes?: readonly string[];
+  /** Raw `AUTO_REVIEW_BLOCK_PATHS` spec; empty string keeps defaults. */
+  blockPathsSpec?: string;
   maxFiles?: number;
   maxLines?: number;
+  /**
+   * @deprecated Use `blockPathsSpec` additions (e.g. `secrets/`) instead.
+   * Existing values are folded into the additions list for backwards compat.
+   */
   additionalHardBlockPrefixes?: readonly string[];
+  /**
+   * @deprecated Use `blockPathsSpec` removals (e.g. `!package.json`) instead.
+   * Existing values are folded into the removals list for backwards compat.
+   * `.github/` entries are still ignored.
+   */
   hardBlockOverride?: readonly string[];
 }
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function legacyAdditionsToPatterns(values: readonly string[]): BlockPattern[] {
+  return values
+    .map((v) => v.trim())
+    .map((v) => (v.startsWith("/") ? v.slice(1) : v))
+    .filter((v) => v.length > 0)
+    .map((path) => ({
+      path,
+      isDirectory: path.endsWith("/"),
+      locked: false,
+    }));
 }
 
+function legacyRemovalsToPatterns(values: readonly string[]): BlockPattern[] {
+  return values
+    .map((v) => v.trim())
+    .map((v) => (v.startsWith("/") ? v.slice(1) : v))
+    .filter((v) => v.length > 0)
+    .filter((v) => v !== ".github/" && !v.startsWith(".github/"))
+    .map((path) => ({
+      path,
+      isDirectory: path.endsWith("/"),
+      locked: false,
+    }));
+}
+
+/**
+ * Build a `ScopeCheckPolicy` from action-input style overrides.
+ *
+ * Resolution order:
+ *   1. Start from `DEFAULT_BLOCK_PATTERNS`.
+ *   2. Apply removals from the spec (and legacy `hardBlockOverride`) — but
+ *      only for unlocked entries; `.github/` survives any removal attempt.
+ *   3. Append additions from the spec (and legacy
+ *      `additionalHardBlockPrefixes`).
+ *
+ * `maxFiles` / `maxLines` of 0 or undefined fall back to defaults.
+ */
 export function buildScopePolicy(overrides: ScopePolicyOverrides): ScopeCheckPolicy {
-  const additional = (overrides.additionalHardBlockPrefixes ?? [])
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0)
-    .map((p) => {
-      // Trailing-slash prefix → directory prefix match (`.husky/`).
-      // No trailing slash → exact file match (`Makefile`).
-      if (p.endsWith("/")) {
-        return new RegExp(`^${escapeRegex(p)}`);
-      }
-      return new RegExp(`^${escapeRegex(p)}$`);
-    });
+  const spec = parseBlockPathsSpec(overrides.blockPathsSpec ?? "");
+
+  const removals: BlockPattern[] = [
+    ...spec.removals,
+    ...legacyRemovalsToPatterns(overrides.hardBlockOverride ?? []),
+  ];
+  const additions: BlockPattern[] = [
+    ...spec.additions,
+    ...legacyAdditionsToPatterns(overrides.additionalHardBlockPrefixes ?? []),
+  ];
+
+  const removalKeys = new Set(removals.map((p) => p.path));
+  const surviving: BlockPattern[] = DEFAULT_BLOCK_PATTERNS.filter(
+    (p) => p.locked || !removalKeys.has(p.path),
+  );
+
+  // Removals that match the root-dotfile wildcard (e.g. !.gitignore) exempt
+  // those specific files from the ROOT_DOTFILE_RE fallback in matchBlockPattern.
+  const exemptedRootDotfiles = new Set(
+    removals.map((p) => p.path).filter((p) => ROOT_DOTFILE_RE.test(p)),
+  );
 
   return {
-    maxFiles: overrides.maxFiles ?? DEFAULT_SCOPE_POLICY.maxFiles,
-    maxLines: overrides.maxLines ?? DEFAULT_SCOPE_POLICY.maxLines,
-    allowedPathPrefixes:
-      overrides.allowedPathPrefixes && overrides.allowedPathPrefixes.length > 0
-        ? overrides.allowedPathPrefixes
-        : DEFAULT_SCOPE_POLICY.allowedPathPrefixes,
-    hardBlockPatterns: [...DEFAULT_HARD_BLOCK_PATTERNS, ...additional],
-    hardBlockOverride: overrides.hardBlockOverride ?? [],
+    maxFiles: overrides.maxFiles && overrides.maxFiles > 0
+      ? overrides.maxFiles
+      : DEFAULT_SCOPE_POLICY.maxFiles,
+    maxLines: overrides.maxLines && overrides.maxLines > 0
+      ? overrides.maxLines
+      : DEFAULT_SCOPE_POLICY.maxLines,
+    blockPatterns: [...surviving, ...additions],
+    exemptedRootDotfiles,
   };
 }
 
 export type ScopeViolationReason =
   | "path_traversal"
   | "hard_block_path"
-  | "disallowed_path"
   | "too_many_files"
   | "too_many_lines"
   | "binary_change";
@@ -146,6 +282,12 @@ export interface ScopeCheckViolation {
   reason: ScopeViolationReason;
   message: string;
   offendingPaths: string[];
+  /**
+   * For `hard_block_path`, the subset of block patterns that the offending
+   * paths matched. Lets the caller surface "the !path entry you need to set"
+   * without re-running the matcher in the comment formatter.
+   */
+  matchedBlockPatterns?: BlockPattern[];
 }
 
 export type ScopeCheckResult = ScopeCheckOk | ScopeCheckViolation;
@@ -158,30 +300,45 @@ function isUnsafePath(path: string): boolean {
   return path.split("/").includes("..");
 }
 
+function matchBlockPattern(
+  path: string,
+  patterns: readonly BlockPattern[],
+  exemptedRootDotfiles: ReadonlySet<string> = new Set(),
+): BlockPattern | null {
+  for (const p of patterns) {
+    if (p.isDirectory) {
+      if (path.startsWith(p.path)) return p;
+    } else if (path === p.path) {
+      return p;
+    }
+  }
+  if (ROOT_DOTFILE_RE.test(path) && !exemptedRootDotfiles.has(path)) {
+    return { path, isDirectory: false, locked: false };
+  }
+  return null;
+}
+
 /**
  * Validate the claude-code-action diff against the configured policy.
  *
- * Ordering rationale:
+ * Ordering:
  *   1. Path traversal / absolute paths short-circuit everything; they indicate
  *      a malformed diff and should never be applied.
- *   2. Hard-block patterns are checked before allowedPathPrefixes so that
- *      e.g. `.github/workflows/foo.yml` fails even if `.github` were ever
- *      added to allowedPathPrefixes by mistake.
- *   3. allowedPathPrefixes act as the positive allow-list for everything else.
+ *   2. Block patterns reject paths that match any configured pattern.
+ *   3. Binary files (numstat `-`/`-`) are refused — `checkScope` cannot count
+ *      their size and the CHECK_COMMAND rollback path would not catch them.
  *   4. Aggregate budgets (file count, line count) are checked last so the
  *      caller sees the more specific violation when both apply.
  */
 export function checkScope(
   files: readonly ChangedFile[],
-  policy: ScopeCheckPolicy = DEFAULT_SCOPE_POLICY
+  policy: ScopeCheckPolicy = DEFAULT_SCOPE_POLICY,
 ): ScopeCheckResult {
   const traversal: string[] = [];
   const blocked: string[] = [];
-  const disallowed: string[] = [];
+  const blockedMatches: BlockPattern[] = [];
   const binary: string[] = [];
   let totalLines = 0;
-
-  const overrideSet = new Set(policy.hardBlockOverride);
 
   for (const file of files) {
     if (isUnsafePath(file.path)) {
@@ -189,24 +346,10 @@ export function checkScope(
       continue;
     }
 
-    if (policy.hardBlockPatterns.some((re) => re.test(file.path))) {
-      // TY-255: allow the diff if ops opted this exact path into the
-      // override list. `.github/` is never overridable — letting a repair
-      // edit workflow YAML would let the agent disable the rest of the
-      // scope check from inside its own diff.
-      const overridable =
-        !file.path.startsWith(".github/") && overrideSet.has(file.path);
-      if (!overridable) {
-        blocked.push(file.path);
-        continue;
-      }
-    }
-
-    const isAllowed = policy.allowedPathPrefixes.some((prefix) =>
-      file.path.startsWith(prefix)
-    );
-    if (!isAllowed) {
-      disallowed.push(file.path);
+    const match = matchBlockPattern(file.path, policy.blockPatterns, policy.exemptedRootDotfiles);
+    if (match !== null) {
+      blocked.push(file.path);
+      blockedMatches.push(match);
       continue;
     }
 
@@ -231,17 +374,9 @@ export function checkScope(
     return {
       ok: false,
       reason: "hard_block_path",
-      message: `Diff touches hard-blocked paths (see docs/operations/security.md): ${blocked.join(", ")}`,
+      message: `Diff touches blocked paths: ${blocked.join(", ")}`,
       offendingPaths: blocked,
-    };
-  }
-
-  if (disallowed.length > 0) {
-    return {
-      ok: false,
-      reason: "disallowed_path",
-      message: `Diff touches paths outside the allow-list (${policy.allowedPathPrefixes.join(", ")}): ${disallowed.join(", ")}`,
-      offendingPaths: disallowed,
+      matchedBlockPatterns: blockedMatches,
     };
   }
 
