@@ -176,6 +176,39 @@ describe("applyRestartToState", () => {
       lastCodexRequestCommentId: 45678,
     });
   });
+
+  it("rejects soft restart from `secret_leak_suspected` (TY-274 #1 — requires --hard)", () => {
+    const state = makeState({
+      status: "stopped",
+      stopReason: "secret_leak_suspected",
+      iterationCount: 2,
+      findingsHashHistory: [{ iteration: 2, hash: "hash-leak" }],
+      lastFindingsHash: "hash-leak",
+    });
+    const result = applyRestartToState(state, "soft", 99);
+    expect(result).toEqual({
+      ok: false,
+      reason: "secret_leak_requires_hard_restart",
+    });
+  });
+
+  it("allows hard restart from `secret_leak_suspected` (TY-274 #1)", () => {
+    const state = makeState({
+      status: "stopped",
+      stopReason: "secret_leak_suspected",
+      iterationCount: 2,
+      findingsHashHistory: [{ iteration: 2, hash: "hash-leak" }],
+      lastFindingsHash: "hash-leak",
+    });
+    const result = applyRestartToState(state, "hard", 99);
+    if (!result.ok) throw new Error("expected hard restart to succeed");
+    expect(result.nextState).toMatchObject({
+      status: "waiting_codex",
+      iterationCount: 0,
+      findingsHashHistory: [],
+      lastFindingsHash: null,
+    });
+  });
 });
 
 describe("handleRestartCommand", () => {

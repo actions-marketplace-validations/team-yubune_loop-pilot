@@ -103,6 +103,7 @@ function makeDeps(
     warning: vi.fn(),
     error: vi.fn(),
     gitDiffNumstat: () => "5\t2\tsrc/foo.ts\n3\t0\ttests/foo.test.ts\n",
+    gitDiffHead: () => "",
     gitListUntracked: () => "",
     readWorkingTreeFile: () => null,
     readHeadSha: () => "abc1234",
@@ -245,6 +246,289 @@ describe("runPostFix", () => {
       1234,
       0,
       expect.stringContaining(".github/workflows/auto-review-loop.yml"),
+      "github-token",
+    );
+  });
+
+  it("reverts and stops with secret_leak_suspected when a hard-fail pattern is in the diff (TY-274 #1)", async () => {
+    // Diff-based: only `+`-prefixed lines from the unified diff are scanned.
+    // The matching content here is an added line in src/foo.ts.
+    //
+    // The token literal is split with `+` so this source file does not contain
+    // a contiguous match for the scanner's own `ghp_[A-Za-z0-9]{20,}` regex —
+    // otherwise post-fix scans of this very test file (when claude-code-action
+    // touches it) would treat the literal as a re-introduced leak.
+    const fakeGhp = "g" + "hp_abcdefghijklmnopqrstuv0123456789";
+    const diff = [
+      "diff --git a/src/foo.ts b/src/foo.ts",
+      "--- a/src/foo.ts",
+      "+++ b/src/foo.ts",
+      "@@ -1 +1 @@",
+      `+export const t = '${fakeGhp}';`,
+    ].join("\n");
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T12:00:00Z",
+        state: makeState(),
+      },
+      {
+        gitDiffNumstat: () => "5\t2\tsrc/foo.ts\n",
+        gitDiffHead: () => diff,
+      },
+    );
+
+    await runPostFix(baseConfig, deps, baseInputs);
+
+    // Working tree reverted, CHECK_COMMAND skipped, no commit/push.
+    expect(deps.resetCalls).toBe(1);
+    expect(deps.runCheckCommand).not.toHaveBeenCalled();
+    expect(deps.commitMessages).toEqual([]);
+    expect(deps.pushCalls).toEqual([]);
+
+    expect(deps.updateStateComment).toHaveBeenCalledWith(
+      "team-yubune",
+      "test-auto-ai-review",
+      100,
+      expect.objectContaining({
+        status: "stopped",
+        stopReason: "secret_leak_suspected",
+      }),
+      "github-token",
+      expect.any(Object),
+    );
+    expect(deps.postStopComment).toHaveBeenCalledWith(
+      "team-yubune",
+      "test-auto-ai-review",
+      99,
+      "secret_leak_suspected",
+      1234,
+      0,
+      // Detail must surface pattern + path but NEVER the matched secret value
+      // (asserted both ways).
+      expect.stringContaining("github-pat-classic in src/foo.ts"),
+      "github-token",
+    );
+    const detailArg = (deps.postStopComment as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[6] as string;
+    expect(detailArg).not.toMatch(/ghp_[A-Za-z0-9]{8,}/);
+  });
+
+  it("does not stop on warning-only secret patterns (TY-274 #1)", async () => {
+    // High-entropy warning pattern in an added diff line — should log a
+    // warning but allow the loop to continue to CHECK_COMMAND.
+    const diff = [
+      "diff --git a/src/foo.ts b/src/foo.ts",
+      "--- a/src/foo.ts",
+      "+++ b/src/foo.ts",
+      "@@ -1 +1 @@",
+      "+export const HASH = 'Ab12CdEfGh34IjKlMnOp56QrStUvWxYz_a-b-c-d';",
+    ].join("\n");
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T12:00:00Z",
+        state: makeState(),
+      },
+      {
+        gitDiffNumstat: () => "1\t0\tsrc/foo.ts\n",
+        gitDiffHead: () => diff,
+      },
+    );
+
+    await runPostFix(baseConfig, deps, baseInputs);
+
+    expect(deps.runCheckCommand).toHaveBeenCalled();
+    expect(deps.resetCalls).toBe(0);
+    expect(deps.postStopComment).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      "secret_leak_suspected",
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("ignores secret-shaped content that pre-existed in HEAD (only scans added diff lines, TY-274 #1)", async () => {
+    // Empty diff — the working tree somehow has the same numstat-listed file
+    // but with no actual additions in this iteration. This models the
+    // scanner's own source / fixture files: they already contain matching
+    // patterns in HEAD, so the diff has no `+` lines and they must not
+    // false-positive. CHECK_COMMAND must still run.
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T12:00:00Z",
+        state: makeState(),
+      },
+      {
+        gitDiffNumstat: () => "5\t2\tsrc/secret-scanner.ts\n",
+        // No `+` lines → no added content scanned → no findings.
+        gitDiffHead: () => "",
+      },
+    );
+
+    await runPostFix(baseConfig, deps, baseInputs);
+
+    expect(deps.resetCalls).toBe(0);
+    expect(deps.runCheckCommand).toHaveBeenCalled();
+  });
+
+  it("treats entire content of untracked files as added and scans them (TY-274 #1)", async () => {
+    // claude-code-action added a brand-new file containing a hard-fail
+    // pattern. Diff doesn't include the file body, so untracked files must
+    // be read in full.
+    // Token literal split with `+` to avoid self-matching the scanner regex in
+    // this source file (see the diff-based scan rationale above).
+    const fakeGhp = "g" + "hp_abcdefghijklmnopqrstuv0123456789";
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T12:00:00Z",
+        state: makeState(),
+      },
+      {
+        gitDiffNumstat: () => "",
+        gitDiffHead: () => "",
+        gitListUntracked: () => "src/new-leak.ts\n",
+        readWorkingTreeFile: (path) =>
+          path === "src/new-leak.ts"
+            ? `export const t = '${fakeGhp}';`
+            : null,
+      },
+    );
+
+    await runPostFix(baseConfig, deps, baseInputs);
+
+    expect(deps.resetCalls).toBe(1);
+    expect(deps.runCheckCommand).not.toHaveBeenCalled();
+    expect(deps.postStopComment).toHaveBeenCalledWith(
+      "team-yubune",
+      "test-auto-ai-review",
+      99,
+      "secret_leak_suspected",
+      1234,
+      0,
+      expect.stringContaining("github-pat-classic in src/new-leak.ts"),
+      "github-token",
+    );
+  });
+
+  it("re-scans secrets after CHECK_COMMAND on the no-build path (Codex P1 r3256220740)", async () => {
+    // Pre-check scan saw the agent's edit (clean). CHECK_COMMAND's `--fix`
+    // pass then rewrote src/foo.ts and injected a hard-fail token. With no
+    // buildCommand, there was previously no second scan before staging, so
+    // the leaked content would have been committed and pushed. The
+    // pre-commit scan must catch this and stop with secret_leak_suspected.
+    const fakeGhp = "g" + "hp_abcdefghijklmnopqrstuv0123456789";
+    const cleanDiff = [
+      "diff --git a/src/foo.ts b/src/foo.ts",
+      "--- a/src/foo.ts",
+      "+++ b/src/foo.ts",
+      "@@ -1 +1 @@",
+      "+const v = 1;",
+    ].join("\n");
+    const dirtyDiff = [
+      "diff --git a/src/foo.ts b/src/foo.ts",
+      "--- a/src/foo.ts",
+      "+++ b/src/foo.ts",
+      "@@ -1 +1 @@",
+      `+const v = '${fakeGhp}';`,
+    ].join("\n");
+    const diffHead = vi
+      .fn()
+      .mockReturnValueOnce(cleanDiff) // pre-check scan: clean
+      .mockReturnValueOnce(dirtyDiff); // pre-commit scan: CHECK_COMMAND injected leak
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T12:00:00Z",
+        state: makeState(),
+      },
+      {
+        gitDiffNumstat: () => "5\t2\tsrc/foo.ts\n",
+        gitDiffHead: diffHead,
+        gitListUntracked: () => "",
+      },
+    );
+
+    await runPostFix(baseConfig, deps, baseInputs);
+
+    expect(deps.runCheckCommand).toHaveBeenCalled();
+    // Pre-commit scan tripped → revert + secret_leak_suspected, no commit.
+    expect(deps.resetCalls).toBe(1);
+    expect(deps.commitMessages).toEqual([]);
+    expect(deps.pushCalls).toEqual([]);
+    expect(deps.postStopComment).toHaveBeenCalledWith(
+      "team-yubune",
+      "test-auto-ai-review",
+      99,
+      "secret_leak_suspected",
+      1234,
+      0,
+      expect.stringContaining("github-pat-classic in src/foo.ts"),
+      "github-token",
+    );
+  });
+
+  it("scans untracked files whose names contain ' => ' (Codex P2 r3256517009)", async () => {
+    // `git ls-files --others` returns real filesystem paths verbatim, never
+    // rename notation (that's a `git diff --numstat` artefact). A pre-commit
+    // filter that drops `" => "` lines would silently skip legitimate
+    // untracked files with that substring in their name, letting any secret
+    // in their body slip past the final scan.
+    const fakeGhp = "g" + "hp_abcdefghijklmnopqrstuv0123456789";
+    const untrackedListings = vi
+      .fn()
+      // Initial enumeration (before CHECK_COMMAND): clean.
+      .mockReturnValueOnce("")
+      // Pre-commit enumeration: untracked file with ` => ` in its name.
+      .mockReturnValueOnce("data/a => b.json\n");
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T12:00:00Z",
+        state: makeState(),
+      },
+      {
+        gitDiffNumstat: () => "1\t0\tsrc/foo.ts\n",
+        gitDiffHead: () => "",
+        gitListUntracked: untrackedListings,
+        readWorkingTreeFile: (path) =>
+          path === "data/a => b.json"
+            ? `{ "token": "${fakeGhp}" }`
+            : null,
+      },
+    );
+
+    await runPostFix(baseConfig, deps, baseInputs);
+
+    expect(deps.resetCalls).toBe(1);
+    expect(deps.commitMessages).toEqual([]);
+    expect(deps.postStopComment).toHaveBeenCalledWith(
+      "team-yubune",
+      "test-auto-ai-review",
+      99,
+      "secret_leak_suspected",
+      1234,
+      0,
+      // Path with " => " in its name must surface in the stop detail.
+      expect.stringContaining("github-pat-classic in data/a => b.json"),
       "github-token",
     );
   });
@@ -1181,6 +1465,8 @@ describe("runPostFix", () => {
       // Post-CHECK enumeration: CHECK_COMMAND wrote a scratch report.
       .mockReturnValueOnce("tmp/check-report.json\n")
       // Post-BUILD enumeration: BUILD_COMMAND cleaned up the scratch file.
+      .mockReturnValueOnce("")
+      // Pre-commit secret scan enumeration (TY-274 follow-up).
       .mockReturnValueOnce("");
     const deps = makeDeps(
       {

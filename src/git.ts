@@ -43,6 +43,50 @@ export function gitDiffNumstat(): string {
   });
 }
 
+/**
+ * `git diff --unified=0 --no-color --no-ext-diff --no-textconv HEAD`
+ * (raw unified diff stdout).
+ *
+ * Used by the secret-scanner (TY-274 #1) to scan only **added** lines rather
+ * than the full working-tree contents — without this, the scanner would
+ * flag its own regex literals (which encode the patterns to detect) as a
+ * leak and stop the loop on its own source file.
+ *
+ * Why each flag:
+ *   - `--unified=0` removes context lines so the output is strictly the
+ *     changed hunks.
+ *   - `--no-renames` is intentionally NOT passed. With it, a rename of a
+ *     file containing a pre-existing secret-shaped string would appear as
+ *     delete-old + add-new, and the scanner would treat the unchanged
+ *     content as freshly introduced and stop the loop on a false positive.
+ *     With git's default rename detection, pure renames emit
+ *     `rename from`/`rename to` headers and no `+`/`-` lines.
+ *   - `--no-ext-diff` forces git's internal diff engine. Without it,
+ *     `diff.external` (config) or `GIT_EXTERNAL_DIFF` (env) would invoke an
+ *     external helper whose output is not guaranteed to be unified-diff
+ *     format. `extractAddedContentFromUnifiedDiff` would then see no `+`
+ *     hunks and silently skip every tracked file — a complete bypass of
+ *     the secret gate in any environment that configures one.
+ *   - `--no-textconv` disables `.gitattributes`-driven textconv filters.
+ *     A repo can declare a textconv driver that redacts or transforms file
+ *     bytes before diffing; scanning the transformed output instead of the
+ *     raw add lets a real secret slip past the scanner.
+ */
+export function gitDiffHead(): string {
+  return execFileSync(
+    "git",
+    [
+      "diff",
+      "--unified=0",
+      "--no-color",
+      "--no-ext-diff",
+      "--no-textconv",
+      "HEAD",
+    ],
+    { encoding: "utf-8" },
+  );
+}
+
 /** `git ls-files --others --exclude-standard` (raw stdout). */
 export function gitListUntracked(): string {
   return execFileSync("git", ["ls-files", "--others", "--exclude-standard"], {

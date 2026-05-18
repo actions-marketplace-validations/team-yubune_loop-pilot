@@ -76,6 +76,31 @@ Codex が `@codex review` 要求に対して通常のレビュー結果ではな
 
 ---
 
+### Secret leak の疑い (`secret_leak_suspected`, TY-274 #1)
+
+post-fix の secret-scanner (`src/secret-scanner.ts`) が **hard-fail パターン**（既知 token prefix / PEM private-key ブロック）を変更ファイルの内容から検出した場合、scope check 通過後 / CHECK_COMMAND 実行前にロールバック + `stopped / secret_leak_suspected` で停止する。
+
+実装経路: `src/main-post-fix.ts` の scope check 通過直後 → `scanForSecrets` → hard-fail 検出 → `resetWorkingTree` → `failureExit({ stopReason: "secret_leak_suspected" })`。
+
+#### 停止コメントに含まれる情報
+
+- 検出した pattern 名 (例: `github-pat-classic`) と path のみ。**マッチした値そのものは含まれない** — 停止コメント自体が secret leak の vector にならないようにするため
+- 復旧手順 (`/restart-review --hard` 必須) と関連 doc へのリンク
+
+#### 復旧手順
+
+1. PR の変更ファイルを手動でレビューし、漏洩した secret を特定する
+2. secret 自体を **rotate** する (例: GitHub PAT を revoke、AWS access key を deactivate、private key を再生成)。push 済みなら git history からも除去 (`git filter-repo` 等)
+3. **コミット履歴と branch を確認**: post-fix はロールバックを行うため auto-fix の commit は残らないが、claude-code-action が直接編集した working tree は reset 前に存在した。`git log` に新しいコミットが入っていないことを確認
+4. `/restart-review --hard` を投稿。**soft restart は `secret_leak_requires_hard_restart` で拒否される** — 同じ Codex finding hash で再 trigger すれば同じ secret 検出経路を踏み無限ループになるため、`--hard` で iteration history を明示的に clear する必要がある
+5. 次 iteration を観測。warning パターンの再検出は許容するが、hard-fail が再度出る場合は実装の secret-scanner pattern または Codex finding 自体に問題がある
+
+#### `/restart-review` (soft) を拒否する理由
+
+`applyRestartToState` (`src/restart-command.ts`) が `state.stopReason === "secret_leak_suspected"` + `mode === "soft"` の組合せを `secret_leak_requires_hard_restart` reason で reject する。これは「人間が leak を確認した」という明示的な操作を求めるためで、PR 作者が誤って soft restart を打っても直ちに同じ経路で再 leak することはない。
+
+---
+
 ## 停止時コメント例
 
 auto-review の終了系イベント (`done` / `stopped` / `init_incomplete`) では **2 つの場所** に情報が出る:

@@ -1,5 +1,6 @@
 import * as core from "@actions/core";
 import { isSeverity } from "./severity-parser.js";
+import { validateCheckCommand } from "./check-command-allowlist.js";
 import type { Severity } from "./types.js";
 
 /**
@@ -185,6 +186,22 @@ function loadBaseConfig(): BaseConfig {
   }
 
   const githubToken = requireInput("github-token", "GITHUB_TOKEN");
+
+  // TY-274 #2: validate CHECK_COMMAND at config load so an unsafe value
+  // (shell metacharacters, an off-allowlist binary like `bash` / `eval`)
+  // fails fast — before claude-code-action runs and burns Actions minutes /
+  // Claude API tokens. The same validator powers the Bash allowlist
+  // derivation (`deriveAllowedBashTools`); rejecting it here keeps the two
+  // entry points symmetric. Operators must migrate non-allowlist commands
+  // (see docs/operations/security.md — CHECK_COMMAND validation).
+  const checkCommand = input("check-command", "CHECK_COMMAND", "npm run check");
+  const checkCommandValidation = validateCheckCommand(checkCommand);
+  if (!checkCommandValidation.ok) {
+    throw new Error(
+      `CHECK_COMMAND ${JSON.stringify(checkCommand)} was rejected by check-command-allowlist: ${checkCommandValidation.reason}. See docs/operations/security.md (CHECK_COMMAND validation) for the allowlist and migration steps.`,
+    );
+  }
+
   const codexReviewRequestToken = input(
     "codex-review-request-token",
     "CODEX_REVIEW_REQUEST_TOKEN",
@@ -195,7 +212,7 @@ function loadBaseConfig(): BaseConfig {
   return {
     maxReviewIterations: intInput("max-review-iterations", "MAX_REVIEW_ITERATIONS", 20, 1),
     debounceSeconds: intInput("debounce-seconds", "DEBOUNCE_SECONDS", 90, 0),
-    checkCommand: input("check-command", "CHECK_COMMAND", "npm run check"),
+    checkCommand,
     buildCommand: input("build-command", "BUILD_COMMAND", ""),
     codexBotLogin: input("codex-bot-login", "CODEX_BOT_LOGIN", "chatgpt-codex-connector[bot]"),
     stabilizeIntervalSeconds: intInput(

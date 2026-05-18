@@ -19109,6 +19109,46 @@ function isSeverity(value) {
   return value === "P0" || value === "P1" || value === "P2" || value === "P3";
 }
 
+// dist/check-command-allowlist.js
+var CHECK_COMMAND_BINARY_WHITELIST = [
+  "npm",
+  "pnpm",
+  "yarn",
+  "bun",
+  "npx",
+  "pnpx",
+  "pytest",
+  "python",
+  "python3",
+  "make",
+  "cargo",
+  "go",
+  "mise",
+  "task",
+  "just"
+];
+var CHECK_COMMAND_SAFE_CHAR_RE = /^[A-Za-z0-9 ._/=:@+\-]+$/;
+function validateCheckCommand(rawCommand) {
+  const command = rawCommand.trim();
+  if (command.length === 0) {
+    return { ok: false, reason: "empty command" };
+  }
+  if (!CHECK_COMMAND_SAFE_CHAR_RE.test(command)) {
+    return {
+      ok: false,
+      reason: "contains characters outside the safe set (shell metacharacter or quote)"
+    };
+  }
+  const firstToken = command.split(" ")[0] ?? "";
+  if (!CHECK_COMMAND_BINARY_WHITELIST.includes(firstToken)) {
+    return {
+      ok: false,
+      reason: `binary '${firstToken}' is not in the CHECK_COMMAND whitelist`
+    };
+  }
+  return { ok: true };
+}
+
 // dist/config.js
 var DEFAULT_SEVERITY_THRESHOLD = "P2";
 var DEFAULT_CLAUDE_CODE_MODEL_BASE = "claude-sonnet-4-6";
@@ -19124,12 +19164,17 @@ function loadBaseConfig() {
     throw new Error(`github-repository must be in "owner/name" format with valid characters, got: "${repoFullName}"`);
   }
   const githubToken = requireInput("github-token", "GITHUB_TOKEN");
+  const checkCommand = input("check-command", "CHECK_COMMAND", "npm run check");
+  const checkCommandValidation = validateCheckCommand(checkCommand);
+  if (!checkCommandValidation.ok) {
+    throw new Error(`CHECK_COMMAND ${JSON.stringify(checkCommand)} was rejected by check-command-allowlist: ${checkCommandValidation.reason}. See docs/operations/security.md (CHECK_COMMAND validation) for the allowlist and migration steps.`);
+  }
   const codexReviewRequestToken = input("codex-review-request-token", "CODEX_REVIEW_REQUEST_TOKEN", githubToken);
   const autoReviewPushToken = input("auto-review-push-token", "AUTO_REVIEW_PUSH_TOKEN", "");
   return {
     maxReviewIterations: intInput("max-review-iterations", "MAX_REVIEW_ITERATIONS", 20, 1),
     debounceSeconds: intInput("debounce-seconds", "DEBOUNCE_SECONDS", 90, 0),
-    checkCommand: input("check-command", "CHECK_COMMAND", "npm run check"),
+    checkCommand,
     buildCommand: input("build-command", "BUILD_COMMAND", ""),
     codexBotLogin: input("codex-bot-login", "CODEX_BOT_LOGIN", "chatgpt-codex-connector[bot]"),
     stabilizeIntervalSeconds: intInput("stabilize-interval-seconds", "STABILIZE_INTERVAL_SECONDS", 10, 1),
@@ -19583,6 +19628,16 @@ function gitDiffNumstat() {
     encoding: "utf-8"
   });
 }
+function gitDiffHead() {
+  return (0, import_node_child_process2.execFileSync)("git", [
+    "diff",
+    "--unified=0",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "HEAD"
+  ], { encoding: "utf-8" });
+}
 function gitListUntracked() {
   return (0, import_node_child_process2.execFileSync)("git", ["ls-files", "--others", "--exclude-standard"], {
     encoding: "utf-8"
@@ -19874,6 +19929,243 @@ async function runBuildCommand(buildCommand) {
     const combined = stdout + (stderr ? "\n" + stderr : "") + "\nError: " + message;
     return { success: false, output: sanitizeOutput(combined) };
   }
+}
+
+// dist/secret-scanner.js
+var HARD_FAIL_SECRET_PATTERNS = [
+  {
+    name: "github-pat-classic",
+    severity: "hard",
+    // Classic PATs (`ghp_` + 36 base62 chars in practice; floor 20 to cover
+    // older shorter formats and avoid false negatives on shape drift).
+    re: /ghp_[A-Za-z0-9]{20,}/
+  },
+  {
+    name: "github-oauth-token",
+    severity: "hard",
+    re: /gho_[A-Za-z0-9]{20,}/
+  },
+  {
+    name: "github-user-server-token",
+    severity: "hard",
+    // ghu_ (user-to-server) and ghs_ (server-to-server) share the same shape.
+    re: /gh[us]_[A-Za-z0-9]{20,}/
+  },
+  {
+    name: "github-refresh-token",
+    severity: "hard",
+    // ghr_ refresh tokens (paired with ghu_/ghs_ short-lived credentials).
+    re: /ghr_[A-Za-z0-9]{20,}/
+  },
+  {
+    name: "github-fine-grained-pat",
+    severity: "hard",
+    // Fine-grained PATs use the `github_pat_` prefix followed by a longer
+    // body (typically `<11>_<59>` base62 chars). Length floor 30 covers the
+    // shortest documented shape with margin.
+    re: /github_pat_[A-Za-z0-9_]{30,}/
+  },
+  {
+    name: "anthropic-or-openai-api-key",
+    severity: "hard",
+    // sk-ant-… for Anthropic, sk-… for OpenAI. The unified regex picks up
+    // both with at least 20 trailing key chars.
+    re: /sk-(?:ant-)?[A-Za-z0-9_-]{20,}/
+  },
+  {
+    name: "slack-token",
+    severity: "hard",
+    re: /xox[bp]-[A-Za-z0-9-]{20,}/
+  },
+  {
+    name: "aws-access-key-id",
+    severity: "hard",
+    // AWS access keys are AKIA-prefixed 20-character all-caps blocks.
+    re: /\bAKIA[0-9A-Z]{16}\b/
+  },
+  {
+    name: "aws-secret-key-assignment",
+    severity: "hard",
+    // Generic AWS secret key shape: `aws_secret_access_key = "..."` or
+    // `aws_secret = "..."`. Length floor avoids matching empty placeholders.
+    re: /aws_secret[a-zA-Z_]*\s*[:=]\s*['"]?[A-Za-z0-9/+=]{30,}/i
+  },
+  {
+    name: "private-key-block",
+    severity: "hard",
+    // PEM private-key envelopes only. Explicitly excludes `PUBLIC KEY` — the
+    // canonical PEM grammar uses `PRIVATE KEY` or `ENCRYPTED PRIVATE KEY` for
+    // anything sensitive, and "BEGIN PUBLIC KEY" is a legitimate construct
+    // that should not trigger a hard fail. Algorithm tags (RSA / DSA / EC /
+    // OPENSSH / etc.) come *before* "PRIVATE KEY", so they are absorbed by
+    // the `[A-Z0-9 -]*` slot.
+    re: /-----BEGIN (?:[A-Z0-9 -]*)?(?:ENCRYPTED )?PRIVATE KEY-----/
+  }
+];
+var WARN_SECRET_PATTERNS = [
+  {
+    name: "credential-assignment",
+    severity: "warn",
+    // `password = "secret"`, `api_key: 'abc...'`, `secret="..."`.
+    // Length floor (6) avoids matching empty placeholders / test fixtures.
+    re: /\b(?:password|secret|api[_-]?key)\b\s*[:=]\s*['"][^'"\n]{6,}['"]/i
+  },
+  {
+    name: "high-entropy-long-string",
+    severity: "warn",
+    // 32+ char run of base64-url-safe characters — broad on purpose.
+    // Anchored to word boundaries so partial matches inside larger tokens are
+    // also caught.
+    re: /\b[A-Za-z0-9_-]{32,}\b/
+  }
+];
+function scanForSecrets(targets) {
+  const hardFailures = [];
+  const warnings = [];
+  for (const target of targets) {
+    if (target.content.length === 0)
+      continue;
+    for (const pattern of HARD_FAIL_SECRET_PATTERNS) {
+      if (pattern.re.test(target.content)) {
+        hardFailures.push({
+          pattern: pattern.name,
+          severity: pattern.severity,
+          path: target.path
+        });
+      }
+    }
+    for (const pattern of WARN_SECRET_PATTERNS) {
+      if (pattern.re.test(target.content)) {
+        warnings.push({
+          pattern: pattern.name,
+          severity: pattern.severity,
+          path: target.path
+        });
+      }
+    }
+  }
+  return { hardFailures, warnings };
+}
+function unquoteGitPath(quoted) {
+  let result = "";
+  for (let i = 0; i < quoted.length; i++) {
+    const c = quoted[i];
+    if (c !== "\\" || i === quoted.length - 1) {
+      result += c;
+      continue;
+    }
+    const next = quoted[i + 1];
+    if (next === "n") {
+      result += "\n";
+      i++;
+      continue;
+    }
+    if (next === "t") {
+      result += "	";
+      i++;
+      continue;
+    }
+    if (next === "r") {
+      result += "\r";
+      i++;
+      continue;
+    }
+    if (next === '"') {
+      result += '"';
+      i++;
+      continue;
+    }
+    if (next === "\\") {
+      result += "\\";
+      i++;
+      continue;
+    }
+    if (/[0-7]/.test(next) && i + 3 < quoted.length && /[0-7]/.test(quoted[i + 2]) && /[0-7]/.test(quoted[i + 3])) {
+      const oct = quoted.slice(i + 1, i + 4);
+      result += String.fromCharCode(parseInt(oct, 8));
+      i += 3;
+      continue;
+    }
+    result += c;
+  }
+  return result;
+}
+function parseDiffHeaderPath(headerValue) {
+  let value = headerValue;
+  if (value.startsWith('"')) {
+    const closingQuote = value.lastIndexOf('"');
+    if (closingQuote >= 1) {
+      value = unquoteGitPath(value.slice(1, closingQuote));
+    }
+  } else {
+    value = value.replace(/[\t \r]+$/, "");
+  }
+  if (value === "/dev/null")
+    return null;
+  if (value.startsWith("a/") || value.startsWith("b/")) {
+    return value.slice(2);
+  }
+  return value;
+}
+function extractAddedContentFromUnifiedDiff(diff) {
+  const additions = /* @__PURE__ */ new Map();
+  let activePath = null;
+  let insideHunk = false;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      const bMarker = " b/";
+      const idx = line.lastIndexOf(bMarker);
+      activePath = idx >= 0 ? line.slice(idx + bMarker.length) : null;
+      insideHunk = false;
+      continue;
+    }
+    if (line.startsWith("@@")) {
+      insideHunk = true;
+      continue;
+    }
+    if (!insideHunk) {
+      if (line.startsWith("+++ ")) {
+        const value = line.slice("+++ ".length);
+        const parsed = parseDiffHeaderPath(value);
+        activePath = parsed;
+        continue;
+      }
+      if (line.startsWith("--- "))
+        continue;
+      continue;
+    }
+    if (!line.startsWith("+"))
+      continue;
+    if (activePath === null)
+      continue;
+    const added = line.slice(1);
+    let bucket = additions.get(activePath);
+    if (bucket === void 0) {
+      bucket = [];
+      additions.set(activePath, bucket);
+    }
+    bucket.push(added);
+  }
+  return Array.from(additions, ([path, lines]) => ({
+    path,
+    content: lines.join("\n")
+  }));
+}
+function formatSecretLeakDetail(hardFailures) {
+  const lines = [
+    "Auto-fix blocked \u2014 the repair diff contained values matching high-confidence secret patterns.",
+    "",
+    "Detected patterns (matched values intentionally omitted from this comment):"
+  ];
+  for (const finding of hardFailures) {
+    lines.push(`  - ${finding.pattern} in ${finding.path}`);
+  }
+  lines.push("");
+  lines.push("Recovery: review the affected files manually, remove any committed-but-leaked values, then issue `/restart-review --hard` to clear iteration history.");
+  lines.push("`/restart-review` (without --hard) is rejected for this stop reason to prevent the same finding hash from immediately re-triggering the leak.");
+  lines.push("");
+  lines.push("See docs/operations/security.md (secret-scanner \u30DD\u30EA\u30B7\u30FC) and docs/operations/stop-and-recovery.md.");
+  return lines.join("\n");
 }
 
 // dist/scope-checker.js
@@ -20403,7 +20695,8 @@ var STOP_REASON_LABELS = {
   scope_violation: "Auto-fix blocked \u2014 the repair diff touched protected paths.",
   max_turns_exceeded: "Claude Code Action exhausted the configured --max-turns budget",
   codex_usage_limit: "Codex reported usage / quota limits; no review was performed",
-  codex_request_failed: "Re-posting @codex review failed; auto-review stopped to avoid silent deadlock"
+  codex_request_failed: "Re-posting @codex review failed; auto-review stopped to avoid silent deadlock",
+  secret_leak_suspected: "Auto-fix produced output matching a high-confidence secret pattern (TY-274)"
 };
 
 // dist/comment-poster.js
@@ -20536,6 +20829,7 @@ var defaultDeps3 = {
   warning: (message) => warning(message),
   error: (message) => error(message),
   gitDiffNumstat,
+  gitDiffHead,
   gitListUntracked,
   readWorkingTreeFile,
   readHeadSha: () => readHeadSha("post-fix"),
@@ -20581,6 +20875,21 @@ function detectMaxTurnsExceeded(executionFileContents) {
   return haystack.includes("max_turns") || haystack.includes("max turns") || haystack.includes("maximum turns");
 }
 var SCOPE_POLICY_DOC = "docs/operations/scope-policy.md";
+function buildSecretScanTargets(args) {
+  const targets = extractAddedContentFromUnifiedDiff(args.diff);
+  for (const path of args.untrackedFiles) {
+    const content = args.readFile(path);
+    if (content === null || content.length === 0)
+      continue;
+    targets.push({ path, content });
+  }
+  return targets;
+}
+function logSecretScanWarnings(result, stage, deps) {
+  for (const w of result.warnings) {
+    deps.info(`[secret-scan] WARN stage=${stage} pattern=${w.pattern} path=${w.path} (warning-only; not stopping the loop)`);
+  }
+}
 function formatScopeViolationDetail(violation, maxFiles, maxLines) {
   switch (violation.reason) {
     case "hard_block_path": {
@@ -20839,6 +21148,32 @@ async function runPostFix(config, deps = defaultDeps3, inputs = readPostFixInput
     return;
   }
   deps.info(`[post-fix] Scope check passed: ${scopeResult.changedFiles} file(s), ${scopeResult.totalLines} line(s).`);
+  const preCheckScanTargets = buildSecretScanTargets({
+    diff: deps.gitDiffHead(),
+    untrackedFiles: untrackedChanges.map((f) => f.path),
+    readFile: (p) => deps.readWorkingTreeFile(p)
+  });
+  const preCheckScanResult = scanForSecrets(preCheckScanTargets);
+  logSecretScanWarnings(preCheckScanResult, "pre-check", deps);
+  if (preCheckScanResult.hardFailures.length > 0) {
+    deps.error(`[secret-scan] Hard-fail secret patterns detected pre-check (${preCheckScanResult.hardFailures.length} finding(s)). Reverting working tree.`);
+    for (const f of preCheckScanResult.hardFailures) {
+      deps.error(`[secret-scan] HARD pattern=${f.pattern} path=${f.path}`);
+    }
+    try {
+      deps.resetWorkingTree();
+    } catch (resetError) {
+      deps.error(`[post-fix] Failed to reset working tree after secret-scan hard fail: ${resetError instanceof Error ? resetError.message : String(resetError)}`);
+    }
+    await failureExit({
+      config,
+      inputs,
+      state,
+      stopReason: "secret_leak_suspected",
+      detail: formatSecretLeakDetail(preCheckScanResult.hardFailures)
+    });
+    return;
+  }
   let modifiedFiles = changedFiles.map((f) => f.path);
   const trackedModified = trackedChanges.map((f) => f.path);
   deps.info(`[post-fix] Running CHECK_COMMAND: ${inputs.checkCommand}`);
@@ -21064,6 +21399,51 @@ async function runPostFix(config, deps = defaultDeps3, inputs = readPostFixInput
     };
     modifiedFiles = postBuildChangedFiles.map((f) => f.path);
     deps.info(`[post-fix] BUILD_COMMAND succeeded: ${postBuildChangedFiles.length} file(s), ${scopeResult.totalLines} line(s) staged.`);
+  }
+  let preCommitUntrackedRaw;
+  try {
+    preCommitUntrackedRaw = deps.gitListUntracked();
+  } catch (error2) {
+    deps.error(`[post-fix] Failed to enumerate untracked files for pre-commit scan: ${error2 instanceof Error ? error2.message : String(error2)}`);
+    try {
+      deps.resetWorkingTree();
+    } catch {
+    }
+    await failureExit({
+      config,
+      inputs,
+      state,
+      stopReason: "action_failure",
+      detail: "Failed to enumerate untracked files for the final secret scan."
+    });
+    return;
+  }
+  const preCommitUntracked = preCommitUntrackedRaw.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+  const preCommitScanTargets = buildSecretScanTargets({
+    diff: deps.gitDiffHead(),
+    untrackedFiles: preCommitUntracked,
+    readFile: (p) => deps.readWorkingTreeFile(p)
+  });
+  const preCommitScanResult = scanForSecrets(preCommitScanTargets);
+  logSecretScanWarnings(preCommitScanResult, "pre-commit", deps);
+  if (preCommitScanResult.hardFailures.length > 0) {
+    deps.error(`[secret-scan] Hard-fail secret patterns detected pre-commit (${preCommitScanResult.hardFailures.length} finding(s)). Reverting working tree.`);
+    for (const f of preCommitScanResult.hardFailures) {
+      deps.error(`[secret-scan] HARD pattern=${f.pattern} path=${f.path}`);
+    }
+    try {
+      deps.resetWorkingTree();
+    } catch (resetError) {
+      deps.error(`[post-fix] Failed to reset working tree after pre-commit secret-scan hard fail: ${resetError instanceof Error ? resetError.message : String(resetError)}`);
+    }
+    await failureExit({
+      config,
+      inputs,
+      state,
+      stopReason: "secret_leak_suspected",
+      detail: formatSecretLeakDetail(preCommitScanResult.hardFailures)
+    });
+    return;
   }
   try {
     deps.stagePaths(modifiedFiles);

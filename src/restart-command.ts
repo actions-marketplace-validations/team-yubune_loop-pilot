@@ -56,7 +56,10 @@ export type RestartApplyResult =
     }
   | {
       ok: false;
-      reason: "state_corrupted" | "unsupported_status";
+      reason:
+        | "state_corrupted"
+        | "unsupported_status"
+        | "secret_leak_requires_hard_restart";
     };
 
 export function applyRestartToState(
@@ -69,6 +72,18 @@ export function applyRestartToState(
   }
   if (state.status === "stopped" && state.stopReason === "state_corrupted") {
     return { ok: false, reason: "state_corrupted" };
+  }
+  // TY-274 #1: soft restart from `secret_leak_suspected` is rejected so the
+  // same Codex finding hash cannot immediately re-trigger the leak. `--hard`
+  // clears iteration history + findings hash, which is an explicit operator
+  // acknowledgement that they have reviewed the leak and the next run starts
+  // from scratch.
+  if (
+    state.status === "stopped" &&
+    state.stopReason === "secret_leak_suspected" &&
+    mode !== "hard"
+  ) {
+    return { ok: false, reason: "secret_leak_requires_hard_restart" };
   }
   if (
     state.status !== "done" &&
@@ -390,6 +405,13 @@ function restartRejectionMessage(reason: Exclude<RestartApplyResult, { ok: true 
       return "❌ Restart cannot apply: state is corrupted. See docs/operations/stop-and-recovery.md.";
     case "unsupported_status":
       return "❌ Restart cannot apply: current review status is not restartable.";
+    case "secret_leak_requires_hard_restart":
+      return (
+        "❌ Restart cannot apply: this PR stopped with `secret_leak_suspected`. " +
+        "Soft `/restart-review` would let the same Codex finding hash re-trigger the leak. " +
+        "Review the affected files manually first, then use `/restart-review --hard` to clear iteration history and resume. " +
+        "See docs/operations/security.md (secret-scanner ポリシー) and docs/operations/stop-and-recovery.md."
+      );
   }
 }
 

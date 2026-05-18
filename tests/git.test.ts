@@ -100,6 +100,29 @@ describe("subprocess wrappers", () => {
     );
   });
 
+  it("gitDiffHead forces internal diff + no-textconv (Codex P1 r3256517004 / r3256517012)", () => {
+    // The secret scanner reads from gitDiffHead. If --no-ext-diff is
+    // missing, a repo with `diff.external` / GIT_EXTERNAL_DIFF configured
+    // would invoke an external helper that doesn't emit unified diff
+    // format → scanner sees no `+` hunks → silent bypass. Likewise,
+    // --no-textconv keeps `.gitattributes` textconv drivers from rewriting
+    // content before the scanner sees it.
+    execFileSync.mockReturnValue("");
+    git.gitDiffHead();
+    expect(execFileSync).toHaveBeenCalledWith(
+      "git",
+      [
+        "diff",
+        "--unified=0",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "HEAD",
+      ],
+      { encoding: "utf-8" },
+    );
+  });
+
   it("gitListUntracked invokes the expected git args", () => {
     execFileSync.mockReturnValue("foo.txt\n");
     expect(git.gitListUntracked()).toBe("foo.txt\n");

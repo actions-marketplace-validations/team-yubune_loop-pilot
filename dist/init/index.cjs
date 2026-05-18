@@ -19143,6 +19143,46 @@ function isSeverity(value) {
   return value === "P0" || value === "P1" || value === "P2" || value === "P3";
 }
 
+// dist/check-command-allowlist.js
+var CHECK_COMMAND_BINARY_WHITELIST = [
+  "npm",
+  "pnpm",
+  "yarn",
+  "bun",
+  "npx",
+  "pnpx",
+  "pytest",
+  "python",
+  "python3",
+  "make",
+  "cargo",
+  "go",
+  "mise",
+  "task",
+  "just"
+];
+var CHECK_COMMAND_SAFE_CHAR_RE = /^[A-Za-z0-9 ._/=:@+\-]+$/;
+function validateCheckCommand(rawCommand) {
+  const command = rawCommand.trim();
+  if (command.length === 0) {
+    return { ok: false, reason: "empty command" };
+  }
+  if (!CHECK_COMMAND_SAFE_CHAR_RE.test(command)) {
+    return {
+      ok: false,
+      reason: "contains characters outside the safe set (shell metacharacter or quote)"
+    };
+  }
+  const firstToken = command.split(" ")[0] ?? "";
+  if (!CHECK_COMMAND_BINARY_WHITELIST.includes(firstToken)) {
+    return {
+      ok: false,
+      reason: `binary '${firstToken}' is not in the CHECK_COMMAND whitelist`
+    };
+  }
+  return { ok: true };
+}
+
 // dist/config.js
 var DEFAULT_SEVERITY_THRESHOLD = "P2";
 var DEFAULT_CLAUDE_CODE_MODEL_BASE = "claude-sonnet-4-6";
@@ -19158,12 +19198,17 @@ function loadBaseConfig() {
     throw new Error(`github-repository must be in "owner/name" format with valid characters, got: "${repoFullName}"`);
   }
   const githubToken = requireInput("github-token", "GITHUB_TOKEN");
+  const checkCommand = input("check-command", "CHECK_COMMAND", "npm run check");
+  const checkCommandValidation = validateCheckCommand(checkCommand);
+  if (!checkCommandValidation.ok) {
+    throw new Error(`CHECK_COMMAND ${JSON.stringify(checkCommand)} was rejected by check-command-allowlist: ${checkCommandValidation.reason}. See docs/operations/security.md (CHECK_COMMAND validation) for the allowlist and migration steps.`);
+  }
   const codexReviewRequestToken = input("codex-review-request-token", "CODEX_REVIEW_REQUEST_TOKEN", githubToken);
   const autoReviewPushToken = input("auto-review-push-token", "AUTO_REVIEW_PUSH_TOKEN", "");
   return {
     maxReviewIterations: intInput("max-review-iterations", "MAX_REVIEW_ITERATIONS", 20, 1),
     debounceSeconds: intInput("debounce-seconds", "DEBOUNCE_SECONDS", 90, 0),
-    checkCommand: input("check-command", "CHECK_COMMAND", "npm run check"),
+    checkCommand,
     buildCommand: input("build-command", "BUILD_COMMAND", ""),
     codexBotLogin: input("codex-bot-login", "CODEX_BOT_LOGIN", "chatgpt-codex-connector[bot]"),
     stabilizeIntervalSeconds: intInput("stabilize-interval-seconds", "STABILIZE_INTERVAL_SECONDS", 10, 1),

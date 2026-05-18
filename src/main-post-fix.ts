@@ -15,6 +15,13 @@ import * as git from "./git.js";
 import { runCheckCommand as defaultRunCheckCommand } from "./check-runner.js";
 import { runBuildCommand as defaultRunBuildCommand } from "./build-runner.js";
 import {
+  scanForSecrets,
+  extractAddedContentFromUnifiedDiff,
+  formatSecretLeakDetail,
+  type SecretScanResult,
+  type SecretScanTarget,
+} from "./secret-scanner.js";
+import {
   parseGitNumstat,
   checkScope,
   checkScopeBuildMode,
@@ -89,6 +96,12 @@ export interface PostFixDeps {
    * subsequent `git add -- <path>` calls in `stagePaths`.
    */
   gitDiffNumstat: () => string;
+  /**
+   * Returns the unified diff (`git diff --unified=0 --no-renames --no-color HEAD`)
+   * used by the TY-274 secret-scanner to extract added-only lines. Untracked
+   * files do not appear here — those are read in full via `readWorkingTreeFile`.
+   */
+  gitDiffHead: () => string;
   /** Lists untracked file paths from the working tree (one per line). */
   gitListUntracked: () => string;
   /**
@@ -132,6 +145,7 @@ const defaultDeps: PostFixDeps = {
   warning: (message) => core.warning(message),
   error: (message) => core.error(message),
   gitDiffNumstat: git.gitDiffNumstat,
+  gitDiffHead: git.gitDiffHead,
   gitListUntracked: git.gitListUntracked,
   readWorkingTreeFile: git.readWorkingTreeFile,
   readHeadSha: () => git.readHeadSha("post-fix"),
@@ -200,6 +214,46 @@ const SCOPE_POLICY_DOC = "docs/operations/scope-policy.md";
  * the auto-fix surface; path traversal is reported as a security refusal with
  * no override path.
  */
+/**
+ * Build the scan-input list for the TY-274 secret-scanner.
+ *
+ * Tracked files: extracted from a unified diff so only the agent's added
+ * lines are scanned (avoids self-matching the scanner's own regex literals
+ * and test fixtures, which live in HEAD and therefore do not appear as
+ * additions). Untracked files: read in full because the entire body is new.
+ */
+function buildSecretScanTargets(args: {
+  diff: string;
+  untrackedFiles: readonly string[];
+  readFile: (path: string) => string | null;
+}): SecretScanTarget[] {
+  const targets = extractAddedContentFromUnifiedDiff(args.diff);
+  for (const path of args.untrackedFiles) {
+    const content = args.readFile(path);
+    if (content === null || content.length === 0) continue;
+    targets.push({ path, content });
+  }
+  return targets;
+}
+
+/**
+ * Emit `core.info` lines for warning-tier secret-scan findings.
+ *
+ * The matched value is never logged — pattern name + path only — so the
+ * workflow log itself cannot become a secret-leak vector.
+ */
+function logSecretScanWarnings(
+  result: SecretScanResult,
+  stage: "pre-check" | "pre-commit",
+  deps: { info: (msg: string) => void },
+): void {
+  for (const w of result.warnings) {
+    deps.info(
+      `[secret-scan] WARN stage=${stage} pattern=${w.pattern} path=${w.path} (warning-only; not stopping the loop)`,
+    );
+  }
+}
+
 export function formatScopeViolationDetail(
   violation: ScopeCheckViolation,
   maxFiles: number,
@@ -669,6 +723,49 @@ export async function runPostFix(
     `[post-fix] Scope check passed: ${scopeResult.changedFiles} file(s), ${scopeResult.totalLines} line(s).`,
   );
 
+  // ─── Secret pattern scan (TY-274 #1) ─────────────────────────────────────
+  // Scope check already validated *paths*, but `src/`-class allow-listed paths
+  // are content-agnostic — claude-code-action can `Read` `.env`-style files
+  // and embed their contents into an allowed path. Hard-fail patterns
+  // (known token prefixes / PEM private-key headers) stop the loop with
+  // `secret_leak_suspected`; warning patterns are surfaced via `core.info` so
+  // operators can promote them to hard-fail after they accumulate clean hits.
+  //
+  // Diff-based: we scan only the lines the agent ADDED. Whole-content scanning
+  // would falsely flag the scanner's own regex literals and test fixtures
+  // (which encode the patterns) as leaks the first time they entered the
+  // tree; that content is in HEAD now and therefore absent from `git diff`.
+  const preCheckScanTargets = buildSecretScanTargets({
+    diff: deps.gitDiffHead(),
+    untrackedFiles: untrackedChanges.map((f) => f.path),
+    readFile: (p) => deps.readWorkingTreeFile(p),
+  });
+  const preCheckScanResult = scanForSecrets(preCheckScanTargets);
+  logSecretScanWarnings(preCheckScanResult, "pre-check", deps);
+  if (preCheckScanResult.hardFailures.length > 0) {
+    deps.error(
+      `[secret-scan] Hard-fail secret patterns detected pre-check (${preCheckScanResult.hardFailures.length} finding(s)). Reverting working tree.`,
+    );
+    for (const f of preCheckScanResult.hardFailures) {
+      deps.error(`[secret-scan] HARD pattern=${f.pattern} path=${f.path}`);
+    }
+    try {
+      deps.resetWorkingTree();
+    } catch (resetError) {
+      deps.error(
+        `[post-fix] Failed to reset working tree after secret-scan hard fail: ${resetError instanceof Error ? resetError.message : String(resetError)}`,
+      );
+    }
+    await failureExit({
+      config,
+      inputs,
+      state,
+      stopReason: "secret_leak_suspected",
+      detail: formatSecretLeakDetail(preCheckScanResult.hardFailures),
+    });
+    return;
+  }
+
   // ─── CHECK_COMMAND ───────────────────────────────────────────────────────
   // Pass only tracked paths to runCheckCommand: its rollback is `git checkout
   // -- <path>`, which errors out for paths git has never seen (untracked
@@ -1016,6 +1113,80 @@ export async function runPostFix(
     deps.info(
       `[post-fix] BUILD_COMMAND succeeded: ${postBuildChangedFiles.length} file(s), ${scopeResult.totalLines} line(s) staged.`,
     );
+  }
+
+  // ─── Pre-commit secret pattern scan (TY-274 #1) ──────────────────────────
+  // Runs unconditionally after CHECK_COMMAND (and BUILD_COMMAND if any),
+  // immediately before staging. Catches two bypass paths that the pre-check
+  // scan cannot see:
+  //   1. CHECK_COMMAND can rewrite files (`prettier --write`, `eslint --fix`,
+  //      autoformatters in test runners). On the no-build path there is no
+  //      second scan otherwise, so a check-time mutation that introduces a
+  //      secret-shaped value would be committed silently.
+  //   2. BUILD_COMMAND can inline env vars into bundle output (`dist/`).
+  //
+  // Diff-based, like the pre-check scan: only freshly added lines plus
+  // untracked file bodies. Idempotent against the pre-check scan because the
+  // same additions appear in `git diff HEAD`.
+  let preCommitUntrackedRaw: string;
+  try {
+    preCommitUntrackedRaw = deps.gitListUntracked();
+  } catch (error) {
+    deps.error(
+      `[post-fix] Failed to enumerate untracked files for pre-commit scan: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    try {
+      deps.resetWorkingTree();
+    } catch {
+      // best-effort
+    }
+    await failureExit({
+      config,
+      inputs,
+      state,
+      stopReason: "action_failure",
+      detail: "Failed to enumerate untracked files for the final secret scan.",
+    });
+    return;
+  }
+  // `git ls-files --others` emits real filesystem paths verbatim (one per
+  // line). Unlike `git diff --numstat` it does not produce rename notation,
+  // so a `" => "` substring here is part of a legitimate filename and must
+  // be preserved — filtering it out would silently drop those files from
+  // the final scan and let secrets in such files slip through.
+  const preCommitUntracked = preCommitUntrackedRaw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const preCommitScanTargets = buildSecretScanTargets({
+    diff: deps.gitDiffHead(),
+    untrackedFiles: preCommitUntracked,
+    readFile: (p) => deps.readWorkingTreeFile(p),
+  });
+  const preCommitScanResult = scanForSecrets(preCommitScanTargets);
+  logSecretScanWarnings(preCommitScanResult, "pre-commit", deps);
+  if (preCommitScanResult.hardFailures.length > 0) {
+    deps.error(
+      `[secret-scan] Hard-fail secret patterns detected pre-commit (${preCommitScanResult.hardFailures.length} finding(s)). Reverting working tree.`,
+    );
+    for (const f of preCommitScanResult.hardFailures) {
+      deps.error(`[secret-scan] HARD pattern=${f.pattern} path=${f.path}`);
+    }
+    try {
+      deps.resetWorkingTree();
+    } catch (resetError) {
+      deps.error(
+        `[post-fix] Failed to reset working tree after pre-commit secret-scan hard fail: ${resetError instanceof Error ? resetError.message : String(resetError)}`,
+      );
+    }
+    await failureExit({
+      config,
+      inputs,
+      state,
+      stopReason: "secret_leak_suspected",
+      detail: formatSecretLeakDetail(preCommitScanResult.hardFailures),
+    });
+    return;
   }
 
   // Stage every file that the scope check accepted, then commit + push.

@@ -99,6 +99,8 @@ export const STOP_REASON_LABELS = {
   codex_usage_limit: "Codex reported usage / quota limits; no review was performed",
   codex_request_failed:
     "Re-posting @codex review failed; auto-review stopped to avoid silent deadlock",
+  secret_leak_suspected:
+    "Auto-fix produced output matching a high-confidence secret pattern (TY-274)",
 } as const satisfies Record<string, string>;
 
 export type StopReason = keyof typeof STOP_REASON_LABELS;
