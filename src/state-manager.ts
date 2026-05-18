@@ -1,6 +1,18 @@
 import * as core from "@actions/core";
 import { ghApi } from "./gh.js";
+import { PREVIOUS_CHECK_FAILURE_MAX_CHARS } from "./claude-code-repair-request.js";
 import type { ReviewState } from "./types.js";
+
+/**
+ * Safety-margin upper bound for `previousCheckFailure` length on the read
+ * path (TY-275 #9). Writes go through `truncatePreviousCheckFailure` and
+ * are capped at `PREVIOUS_CHECK_FAILURE_MAX_CHARS`; a hand-edited or legacy
+ * state comment can carry more. We reject anything beyond 2× that cap so
+ * downstream `serializeState` cannot blow through the GitHub comment-body
+ * limit (65,536 chars) and we surface tampering instead of silently
+ * accepting an oversized blob.
+ */
+const PREVIOUS_CHECK_FAILURE_READ_LIMIT = PREVIOUS_CHECK_FAILURE_MAX_CHARS * 2;
 
 const STATE_MARKER = "auto-review-state";
 const STATE_COMMENT_OPEN = "<!-- " + STATE_MARKER;
@@ -62,7 +74,12 @@ function validateState(obj: unknown): obj is ReviewState {
   if (typeof obj !== "object" || obj === null) return false;
   const s = obj as Record<string, unknown>;
 
-  if (typeof s.iterationCount !== "number" || s.iterationCount < 0) return false;
+  // TY-275 #5: `typeof Infinity === "number"` and `Number.isInteger(1e308) === true`
+  // both pass the naive checks, so a hand-edited state with `Infinity` / `NaN` /
+  // `1e308` would slip through and force-trigger `max_iterations` immediately.
+  // `Number.isSafeInteger` rejects non-finite, fractional, AND values outside
+  // [-2^53+1, 2^53-1] (which `Number.isInteger` accepts).
+  if (!Number.isSafeInteger(s.iterationCount) || (s.iterationCount as number) < 0) return false;
   if (typeof s.status !== "string" || !VALID_STATUSES.has(s.status)) return false;
   if (!Array.isArray(s.findingsHashHistory)) return false;
 
@@ -79,6 +96,16 @@ function validateState(obj: unknown): obj is ReviewState {
     "previousCheckFailure" in s &&
     s.previousCheckFailure !== null &&
     typeof s.previousCheckFailure !== "string"
+  ) {
+    return false;
+  }
+  // TY-275 #9: writes go through `truncatePreviousCheckFailure` (cap
+  // PREVIOUS_CHECK_FAILURE_MAX_CHARS), but a hand-edited or legacy state
+  // comment can carry an oversized blob that would push `serializeState`
+  // over the 65,536-char GitHub comment-body limit. Reject upstream.
+  if (
+    typeof s.previousCheckFailure === "string" &&
+    s.previousCheckFailure.length > PREVIOUS_CHECK_FAILURE_READ_LIMIT
   ) {
     return false;
   }

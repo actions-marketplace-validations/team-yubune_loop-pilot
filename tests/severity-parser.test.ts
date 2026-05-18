@@ -49,6 +49,68 @@ describe("parseSeverity", () => {
     expect(result.title).toBe("Title");
   });
 
+  it("rejects mismatched brackets in stage-2 (TY-275 #6)", () => {
+    // Before the fix, `[?` and `]?` were independent so `[P2` (opening only)
+    // and `P2]` (closing only) both matched. Codex doesn't emit these in
+    // practice but a malformed body should NOT be silently classified.
+    // Using P2/P3 avoids the FALLBACK_KEYWORD_REGEX which matches bare
+    // `P0`/`P1` anywhere as a defensive escalation (intentional).
+    const openOnly = parseSeverity("[P2 Title without close");
+    expect(openOnly.severity).toBeNull();
+
+    const closeOnly = parseSeverity("P3] Title without open");
+    expect(closeOnly.severity).toBeNull();
+  });
+
+  it("rejects mismatched markdown bold in stage-2 (TY-275 #6)", () => {
+    // Half-bold `**P2 Title` (no closing `**`) must not match. P2 (not P0/P1)
+    // bypasses the bare-keyword fallback so we can assert STAGE2 rejection
+    // cleanly.
+    const result = parseSeverity("**P2 Title without close");
+    expect(result.severity).toBeNull();
+  });
+
+  it("accepts fully-bold heading `**P2 Title**` (Codex r3257480247 — TY-275 #6 regression fix)", () => {
+    // Codex emits fully-bold P2/P3 headings in the wild. TY-275 #6 tightened
+    // STAGE2 to require matched bold pairs, which inadvertently dropped this
+    // shape (the line as a whole is bold, but the badge isn't separately
+    // bold-wrapped). `stripOuterBold` pre-processing restores acceptance
+    // without re-introducing the half-bold tolerance.
+    const result = parseSeverity("**P2 Memory leak in parser**");
+    expect(result.severity).toBe("P2");
+    expect(result.title).toBe("Memory leak in parser");
+  });
+
+  it("accepts fully-bold heading with bracketed badge `**[P3] Title**` (Codex r3257480247)", () => {
+    const result = parseSeverity("**[P3] Minor logging cleanup**");
+    expect(result.severity).toBe("P3");
+    expect(result.title).toBe("Minor logging cleanup");
+  });
+
+  it("still rejects half-bold lines even with the outer-strip helper (Codex r3257480247)", () => {
+    // Sanity: the unwrap should NOT trigger for `**P2 Title` (no closing
+    // `**`), so the original asymmetry rejection from TY-275 #6 still
+    // applies.
+    const result = parseSeverity("**P2 Half-bold without close");
+    expect(result.severity).toBeNull();
+  });
+
+  it("unwraps fully-bold heading even with trailing whitespace (Codex r3258007790)", () => {
+    // GitHub Markdown permits trailing spaces in headings (notably for line
+    // breaks). `**P2 Title**  ` should still unwrap correctly so the badge
+    // matches; otherwise P2/P3 findings with stray trailing whitespace from
+    // copy-paste are silently dropped.
+    const result = parseSeverity("**P2 Memory leak**   ");
+    expect(result.severity).toBe("P2");
+    expect(result.title).toBe("Memory leak");
+  });
+
+  it("handles trailing CRLF / tabs after the bold wrapper (Codex r3258007790)", () => {
+    const result = parseSeverity("**[P3] Trailing CRLF**\r\n");
+    expect(result.severity).toBe("P3");
+    expect(result.title).toBe("Trailing CRLF");
+  });
+
   it("parses Codex image badge comments including P2", () => {
     const raw =
       "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Reject soft restart for exhausted/looped states**\n\nThe restart can stop again immediately.\n\nUseful? React with 👍 / 👎.";

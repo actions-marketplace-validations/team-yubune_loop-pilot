@@ -545,6 +545,14 @@ export async function runPostFix(
     return;
   }
   const trackedChanges: ChangedFile[] = parseGitNumstat(numstat);
+  // TY-275 #3: `parseGitNumstat` drops paths containing ` => ` as a defensive
+  // guard against rename notation that leaks through when `--no-renames` is
+  // missing — but `git ls-files --others` (which produces `untrackedRaw`)
+  // never emits rename notation. The literal substring is therefore a
+  // legitimate filename character on the untracked side; applying the same
+  // filter would silently drop real files (and any secrets they carry) from
+  // both scope check and the post-fix secret scan. The asymmetry is
+  // intentional — do not add the filter here.
   const untrackedChanges: ChangedFile[] = untrackedRaw
     .split("\n")
     .map((line) => line.trim())

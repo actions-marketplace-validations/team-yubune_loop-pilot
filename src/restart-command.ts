@@ -18,8 +18,19 @@ export type RestartParseResult =
   | { isRestart: true; mode: RestartMode; invalidReason?: never }
   | { isRestart: true; invalidReason: "unsupported_option" };
 
+/**
+ * Reduce a comment body to its first non-empty line for restart-command
+ * matching (TY-275 #4). GitHub comments can carry a trailing rationale
+ * (`/restart-review --hard\n\n（理由: …）`); without this, the rationale
+ * lands inside the slice that follows `/restart-review `, no longer equals
+ * `--hard` (the embedded newline survives `trim()`), and the command is
+ * rejected with `unsupported_option` — forcing operators to keep the
+ * command on a literal single line. Reading the first line keeps the
+ * rationale freedom while still strictly validating the command itself.
+ */
 function normalizeBody(body: string): string {
-  return body.replace(/[\r\n]+$/, "");
+  const firstLine = body.split(/\r?\n/, 1)[0] ?? "";
+  return firstLine.replace(/[\r\n]+$/, "");
 }
 
 export function isRestartCommandLike(body: string): boolean {
@@ -31,11 +42,33 @@ export function parseRestartCommand(body: string): RestartParseResult {
   const normalized = normalizeBody(body);
   const lower = normalized.toLowerCase();
 
+  // Codex review on PR #95 (r3257717909): the continuation-flag check below
+  // must run AFTER confirming the first line is actually a restart command.
+  // Otherwise a non-restart comment like `notes\n--todo` would be
+  // misclassified as `{ isRestart: true, invalidReason: "unsupported_option" }`
+  // instead of `{ isRestart: false }`, leaking false-positive restart
+  // attempts into callers that don't pre-filter with isRestartCommandLike.
+  if (lower !== "/restart-review" && !lower.startsWith("/restart-review ")) {
+    return { isRestart: false };
+  }
+
+  // Codex review on PR #95 (r3257480253): TY-275 #4 extracts only the first
+  // line so operators can append a rationale. But `/restart-review\n--hard`
+  // (flag on a *separate* line) would now be reduced to `/restart-review`
+  // and silently demoted from the operator's intended hard restart to soft,
+  // which is more dangerous than the pre-#4 rejection. If any continuation
+  // line looks like a flag (`--<word>`), reject the whole command rather
+  // than guess the mode.
+  const continuationLines = body.split(/\r?\n/).slice(1);
+  const continuationHasFlag = continuationLines.some((line) =>
+    /^\s*--\w/.test(line),
+  );
+  if (continuationHasFlag) {
+    return { isRestart: true, invalidReason: "unsupported_option" };
+  }
+
   if (lower === "/restart-review") {
     return { isRestart: true, mode: "soft" };
-  }
-  if (!lower.startsWith("/restart-review ")) {
-    return { isRestart: false };
   }
 
   const tail = normalized.slice("/restart-review ".length).trim();
@@ -368,7 +401,7 @@ async function canRestart(
     return false;
   }
 
-  const roles = parseRoles(context.restartRoles);
+  const roles = parseRoles(context.restartRoles, deps.warning);
   if (roles.has("author")) {
     const author = await deps.getPrAuthor(
       context.owner,
@@ -390,13 +423,36 @@ async function canRestart(
   return roles.has(permission);
 }
 
-function parseRoles(raw: string): Set<string> {
-  return new Set(
-    raw
-      .split(",")
-      .map((role) => role.trim().toLowerCase())
-      .filter(Boolean),
-  );
+/**
+ * Known role tokens accepted by `AUTO_REVIEW_RESTART_ROLES`.
+ *
+ * `"author"` is a synthetic alias resolved against the PR author (not a
+ * GitHub permission); the rest mirror `BUILTIN_PERMISSIONS`. Unknown tokens
+ * are silently ignored without this validation, so a typo like
+ * `AUTO_REVIEW_RESTART_ROLES="admins"` (trailing s) would reject every
+ * restart command without surfacing the misconfiguration anywhere — TY-275 #2.
+ */
+const KNOWN_RESTART_ROLES: ReadonlySet<string> = new Set([
+  "author",
+  "admin",
+  "maintain",
+  "write",
+  "triage",
+  "read",
+]);
+
+function parseRoles(raw: string, warn: (msg: string) => void): Set<string> {
+  const requested = raw
+    .split(",")
+    .map((role) => role.trim().toLowerCase())
+    .filter(Boolean);
+  const unknown = requested.filter((r) => !KNOWN_RESTART_ROLES.has(r));
+  if (unknown.length > 0) {
+    warn(
+      `[restart] Unknown role(s) ignored in AUTO_REVIEW_RESTART_ROLES: ${unknown.join(", ")}. Valid roles: ${[...KNOWN_RESTART_ROLES].join(", ")}.`,
+    );
+  }
+  return new Set(requested.filter((r) => KNOWN_RESTART_ROLES.has(r)));
 }
 
 function restartRejectionMessage(reason: Exclude<RestartApplyResult, { ok: true }>["reason"]): string {

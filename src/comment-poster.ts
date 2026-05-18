@@ -297,9 +297,34 @@ export async function postTestFailureComment(
   checkOutput: string,
   token: string,
 ): Promise<number> {
-  // Escape triple-backtick sequences in output to prevent Markdown code fence breakout
-  const safeOutput = checkOutput.replace(/`{3,}/g, "``");
-  const body = `\`\`\`\n${safeOutput}\n\`\`\`\n\nChanges have been rolled back.`;
+  // TY-275 #8: pick a backtick fence longer than ANY backtick / tilde run in
+  // the payload. GitHub Markdown treats both `` ``` `` and `~~~` as code-fence
+  // openers, so a payload containing either could escape the outer fence and
+  // start interpreting CHECK_COMMAND output as markdown (headings, lists,
+  // links pulling images). Following the same nonce-fence pattern as
+  // `serializeStatusComment` keeps the output safely opaque.
+  //
+  // Cap (Codex review on PR #95, r3257188563): if the raw payload contains
+  // a backtick / tilde run longer than `MAX_FENCE_RUN_CHARS`, GitHub's
+  // 65,536-char comment body limit can be blown out by two ~60k-char
+  // fences. Truncate over-long runs in the payload BEFORE computing the
+  // fence so neither the fence nor the body explodes. CHECK_COMMAND output
+  // with 100+ consecutive backticks is pathological (binary garbage,
+  // adversarial test output); collapsing it preserves the ability to post
+  // the stop comment at all, which is the higher-value invariant.
+  const MAX_FENCE_RUN_CHARS = 100;
+  const cappedRun = (ch: "`" | "~"): RegExp =>
+    new RegExp(`${ch === "`" ? "`" : "~"}{${MAX_FENCE_RUN_CHARS + 1},}`, "g");
+  const truncatedPayload = checkOutput
+    .replace(cappedRun("`"), "`".repeat(MAX_FENCE_RUN_CHARS))
+    .replace(cappedRun("~"), "~".repeat(MAX_FENCE_RUN_CHARS));
+  const runs: number[] = [];
+  for (const m of truncatedPayload.matchAll(/`+|~+/g)) {
+    runs.push(m[0].length);
+  }
+  const longestRun = runs.length === 0 ? 2 : Math.max(...runs);
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  const body = `${fence}\n${truncatedPayload}\n${fence}\n\nChanges have been rolled back.`;
 
   return applyStatusUpdate(
     owner,

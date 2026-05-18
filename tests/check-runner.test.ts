@@ -83,6 +83,29 @@ describe("sanitizeOutput", () => {
     const input = "short output";
     expect(sanitizeOutput(input)).toBe("short output");
   });
+
+  it("strips CSI sequences with private-parameter markers (TY-275 #7)", () => {
+    // `\x1b[?1049h` enables the alternate screen buffer. The previous regex
+    // `[0-9;]*` excluded `?`, so the sequence was left in output verbatim.
+    const input = "\x1b[?1049hclear screen\x1b[?1049l";
+    expect(sanitizeOutput(input)).toBe("clear screen");
+  });
+
+  it("strips OSC (operating system command) sequences (TY-275 #7)", () => {
+    // OSC 8 is hyperlink: `\x1b]8;;<url>\x07<text>\x1b]8;;\x07`. Both BEL
+    // and `\x1b\\` (ST) terminators are valid.
+    const bel = "\x1b]8;;https://example.com\x07linked\x1b]8;;\x07 end";
+    expect(sanitizeOutput(bel)).toBe("linked end");
+    const st = "\x1b]0;title\x1b\\after-title";
+    expect(sanitizeOutput(st)).toBe("after-title");
+  });
+
+  it("strips charset-designation 2-byte sequences (TY-275 #7)", () => {
+    // `\x1b(B` selects ASCII (G0). Emitted by some shells before / after
+    // mode switches.
+    const input = "\x1b(Bplain text\x1b)0";
+    expect(sanitizeOutput(input)).toBe("plain text");
+  });
 });
 
 describe("runCheckCommand", () => {

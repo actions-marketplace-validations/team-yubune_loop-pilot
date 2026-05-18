@@ -207,6 +207,54 @@ function loadBaseConfig(): BaseConfig {
     "CODEX_REVIEW_REQUEST_TOKEN",
     githubToken
   );
+
+  // TY-275 #1 (refined per Codex review on PR #95):
+  //   - r3257188567 (first pass): the originally-proposed whitelist
+  //     `[A-Za-z0-9._\-]+` rejected legitimate provider-form identifiers
+  //     used in the wild — Bedrock ARNs
+  //     (`bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0`), Vertex AI
+  //     (`claude-3-5-sonnet@20240620`), context-window variants
+  //     (`claude-opus-4-7:1m`, `claude-opus-4-7[1m]`).
+  //   - r3257717904 (this pass): the relaxed forbidden-char regex still
+  //     accepted leading-`-` strings like `--allowedTools`. Workflow
+  //     templates the value as `--model <value>`, so a `--`-prefixed
+  //     "model name" would be re-interpreted as another CLI flag and
+  //     achieve argv injection without using whitespace.
+  //
+  // Final rule:
+  //   - Reject whitespace, quotes (`'`, `"`, backtick), backslash, control
+  //     chars, shell metas (`;`, `|`, `&`, `<`, `>`, `$`).
+  //   - **Reject any leading `-`** so a value cannot start a new flag in
+  //     `claude_args`. No legitimate model identifier starts with `-`.
+  //   - Accept everything else (provider-form `:`, `/`, `@`, `[`, `]`,
+  //     `.`, alphanumerics) so Bedrock ARN / Vertex AI / context variants
+  //     continue to load.
+  const MODEL_NAME_FORBIDDEN_RE = /[\s'"`\\;|&<>$]|[\x00-\x1f\x7f]/;
+  function isValidModelName(value: string): boolean {
+    if (value.length === 0) return false;
+    if (value.startsWith("-")) return false; // argv-flag injection guard
+    return !MODEL_NAME_FORBIDDEN_RE.test(value);
+  }
+  const claudeCodeModelBase = input(
+    "claude-code-model-base",
+    "CLAUDE_CODE_MODEL_BASE",
+    DEFAULT_CLAUDE_CODE_MODEL_BASE,
+  );
+  if (!isValidModelName(claudeCodeModelBase)) {
+    throw new Error(
+      `CLAUDE_CODE_MODEL_BASE ${JSON.stringify(claudeCodeModelBase)} is rejected: model identifiers must not start with \`-\` (argv-flag injection guard) and must not contain whitespace, quotes, or shell metacharacters. Provider-form identifiers (Bedrock ARN, Vertex AI, context variants like \`claude-opus-4-7:1m\`) are supported.`,
+    );
+  }
+  const claudeCodeModelEscalated = input(
+    "claude-code-model-escalated",
+    "CLAUDE_CODE_MODEL_ESCALATED",
+    DEFAULT_CLAUDE_CODE_MODEL_ESCALATED,
+  );
+  if (!isValidModelName(claudeCodeModelEscalated)) {
+    throw new Error(
+      `CLAUDE_CODE_MODEL_ESCALATED ${JSON.stringify(claudeCodeModelEscalated)} is rejected: model identifiers must not start with \`-\` (argv-flag injection guard) and must not contain whitespace, quotes, or shell metacharacters. Provider-form identifiers (Bedrock ARN, Vertex AI, context variants like \`claude-opus-4-7:1m\`) are supported.`,
+    );
+  }
   const autoReviewPushToken = input("auto-review-push-token", "AUTO_REVIEW_PUSH_TOKEN", "");
 
   return {
@@ -241,16 +289,8 @@ function loadBaseConfig(): BaseConfig {
       "AUTO_REVIEW_RESTART_ROLES",
       "author,write,maintain,admin",
     ),
-    claudeCodeModelBase: input(
-      "claude-code-model-base",
-      "CLAUDE_CODE_MODEL_BASE",
-      DEFAULT_CLAUDE_CODE_MODEL_BASE,
-    ),
-    claudeCodeModelEscalated: input(
-      "claude-code-model-escalated",
-      "CLAUDE_CODE_MODEL_ESCALATED",
-      DEFAULT_CLAUDE_CODE_MODEL_ESCALATED,
-    ),
+    claudeCodeModelBase,
+    claudeCodeModelEscalated,
     autoMergeOnClean: boolInput("auto-merge-on-clean", "AUTO_REVIEW_AUTO_MERGE", false),
     autoMergePollSeconds: intInput(
       "auto-merge-poll-seconds",

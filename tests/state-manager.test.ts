@@ -146,6 +146,42 @@ describe("deserializeState", () => {
     const corruptedBody = `<!-- auto-review-state\n{not valid json\n-->`;
     expect(deserializeState(corruptedBody)).toBeNull();
   });
+
+  it("rejects iterationCount=Infinity (Number.isInteger guard, TY-275 #5)", () => {
+    // `typeof Infinity === "number"` so the loose check let it through and
+    // would force max_iterations on the next iteration. Number.isInteger
+    // rejects all non-finite + non-integer floats together.
+    const body = serializeState(makeState()).replace(
+      /"iterationCount":\s*\d+/,
+      '"iterationCount": 1e308',
+    );
+    expect(deserializeState(body)).toBeNull();
+  });
+
+  it("rejects iterationCount=NaN (Number.isInteger guard, TY-275 #5)", () => {
+    // NaN is also a number. JSON.parse can't materialise NaN directly but
+    // a hand-edited state could carry a stringified path; the validator
+    // must still reject any non-integer once we accept the JSON path.
+    // Here we hand-craft the parsed shape via the regex injection of
+    // `1.5` (a float) which passes the JSON parser and the loose check.
+    const body = serializeState(makeState()).replace(
+      /"iterationCount":\s*\d+/,
+      '"iterationCount": 1.5',
+    );
+    expect(deserializeState(body)).toBeNull();
+  });
+
+  it("rejects previousCheckFailure exceeding 2x PREVIOUS_CHECK_FAILURE_MAX_CHARS (TY-275 #9)", () => {
+    // Hand-edited or legacy states may carry a previousCheckFailure beyond
+    // the write-time cap; if accepted, the next serializeState would push
+    // past the 65,536-char GitHub comment-body limit. Reject upstream.
+    const oversized = "A".repeat(50_000); // > 2 * 20_000 cap = 40_000
+    const body = serializeState(makeState()).replace(
+      /"previousCheckFailure":\s*null/,
+      `"previousCheckFailure": ${JSON.stringify(oversized)}`,
+    );
+    expect(deserializeState(body)).toBeNull();
+  });
 });
 
 describe("parseStateCommentRecord", () => {

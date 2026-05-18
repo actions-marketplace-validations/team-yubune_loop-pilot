@@ -303,3 +303,141 @@ describe("loadInitConfig — CHECK_COMMAND validation (TY-274 #2)", () => {
     );
   });
 });
+
+describe("loadInitConfig — Claude model name validation (TY-275 #1)", () => {
+  let restore: (() => void) | null = null;
+
+  afterEach(() => {
+    restore?.();
+    restore = null;
+  });
+
+  it("accepts the default model identifiers", () => {
+    restore = withEnv({ ...REQUIRED_ENV });
+    expect(() => loadInitConfig()).not.toThrow();
+  });
+
+  it("accepts versioned model identifiers (claude-3-5-sonnet-20240620)", () => {
+    restore = withEnv({
+      ...REQUIRED_ENV,
+      CLAUDE_CODE_MODEL_BASE: "claude-3-5-sonnet-20240620",
+    });
+    expect(() => loadInitConfig()).not.toThrow();
+  });
+
+  // Codex review on PR #95 (r3257188567): the original whitelist
+  // `[A-Za-z0-9._\-]+` was over-restrictive and rejected legitimate
+  // provider-form identifiers. The relaxed forbidden-char regex now
+  // accepts them while still blocking whitespace / quote injection.
+  it("accepts Bedrock ARN-style model identifiers (TY-275 #1 follow-up)", () => {
+    restore = withEnv({
+      ...REQUIRED_ENV,
+      CLAUDE_CODE_MODEL_BASE:
+        "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+    });
+    expect(() => loadInitConfig()).not.toThrow();
+  });
+
+  it("accepts Vertex-AI-style @date model identifiers (TY-275 #1 follow-up)", () => {
+    restore = withEnv({
+      ...REQUIRED_ENV,
+      CLAUDE_CODE_MODEL_BASE: "claude-3-5-sonnet@20240620",
+    });
+    expect(() => loadInitConfig()).not.toThrow();
+  });
+
+  it("accepts context-window variant identifiers (claude-opus-4-7:1m, TY-275 #1 follow-up)", () => {
+    restore = withEnv({
+      ...REQUIRED_ENV,
+      CLAUDE_CODE_MODEL_BASE: "claude-opus-4-7:1m",
+    });
+    expect(() => loadInitConfig()).not.toThrow();
+  });
+
+  it("accepts bracket-suffix context variants (claude-opus-4-7[1m], TY-275 #1 follow-up)", () => {
+    restore = withEnv({
+      ...REQUIRED_ENV,
+      CLAUDE_CODE_MODEL_BASE: "claude-opus-4-7[1m]",
+    });
+    expect(() => loadInitConfig()).not.toThrow();
+  });
+
+  it("rejects CLAUDE_CODE_MODEL_BASE with embedded space + flag (argv injection guard)", () => {
+    restore = withEnv({
+      ...REQUIRED_ENV,
+      CLAUDE_CODE_MODEL_BASE: "claude-sonnet-4-6 --max-turns 999",
+    });
+    expect(() => loadInitConfig()).toThrow(
+      /CLAUDE_CODE_MODEL_BASE.*whitespace, quotes, or shell metacharacters/,
+    );
+  });
+
+  it("rejects CLAUDE_CODE_MODEL_ESCALATED with shell metacharacters", () => {
+    restore = withEnv({
+      ...REQUIRED_ENV,
+      CLAUDE_CODE_MODEL_ESCALATED: "claude-opus-4-7; rm -rf /",
+    });
+    expect(() => loadInitConfig()).toThrow(
+      /CLAUDE_CODE_MODEL_ESCALATED.*whitespace, quotes, or shell metacharacters/,
+    );
+  });
+
+  it("rejects quoted model identifiers (argv quote-escape guard)", () => {
+    restore = withEnv({
+      ...REQUIRED_ENV,
+      CLAUDE_CODE_MODEL_BASE: 'claude-opus-4-7"',
+    });
+    expect(() => loadInitConfig()).toThrow(
+      /CLAUDE_CODE_MODEL_BASE.*rejected.*not contain whitespace, quotes, or shell metacharacters/,
+    );
+  });
+
+  it("rejects leading `-` model identifiers (Codex r3257717904 — flag-injection guard)", () => {
+    // Without this guard, an attacker setting
+    // CLAUDE_CODE_MODEL_BASE="--allowedTools" would interpolate as
+    // `--model --allowedTools` and re-interpret the value as a fresh CLI
+    // flag, achieving argv injection without using whitespace. No
+    // legitimate model identifier starts with `-`.
+    restore = withEnv({
+      ...REQUIRED_ENV,
+      CLAUDE_CODE_MODEL_BASE: "--allowedTools",
+    });
+    expect(() => loadInitConfig()).toThrow(
+      /CLAUDE_CODE_MODEL_BASE.*must not start with `-`/,
+    );
+  });
+
+  it("rejects single-dash leading model identifiers (Codex r3257717904)", () => {
+    restore = withEnv({
+      ...REQUIRED_ENV,
+      CLAUDE_CODE_MODEL_ESCALATED: "-model-with-dash",
+    });
+    expect(() => loadInitConfig()).toThrow(
+      /CLAUDE_CODE_MODEL_ESCALATED.*must not start with `-`/,
+    );
+  });
+
+  it("accepts `#` mid-identifier (Codex r3258007797 — false positive rebuttal)", () => {
+    // Codex flagged `#` as if it were rejected, but the forbidden-char regex
+    // intentionally does NOT include `#`: Bash treats `#` as comment only at
+    // the start of a word, and when interpolated as `--model <value>` the
+    // `#` is mid-token. This regression test pins the current permissive
+    // behavior so a future tightening of the regex does not silently break
+    // it.
+    restore = withEnv({
+      ...REQUIRED_ENV,
+      CLAUDE_CODE_MODEL_BASE: "claude-opus-4-7#variant",
+    });
+    expect(() => loadInitConfig()).not.toThrow();
+  });
+
+  it("falls back to default for empty CLAUDE_CODE_MODEL_BASE (no error)", () => {
+    restore = withEnv({
+      ...REQUIRED_ENV,
+      CLAUDE_CODE_MODEL_BASE: "",
+    });
+    // Empty string causes `input()` to fall back to the default, which is
+    // a valid identifier; loadConfig should accept it without throwing.
+    expect(() => loadInitConfig()).not.toThrow();
+  });
+});

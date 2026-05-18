@@ -15,9 +15,23 @@ export interface CheckResult {
  *
  * Why: Terminal output contains ANSI color codes that pollute logs.
  * We strip them for cleaner output storage and display.
+ *
+ * TY-275 #7: covers more than the basic CSI SGR subset. Each alternative:
+ *   1. CSI sequences (`ESC [ ... <letter>`). Parameters include digits, `;`
+ *      separators, AND private-parameter markers `?`, `>`, `<`, `=` used by
+ *      modes like `\x1b[?1049h` (alternate-screen). The previous regex
+ *      missed these and left bare `?...h` in the output.
+ *   2. OSC sequences (`ESC ] ... BEL` or `ESC ] ... ESC \`) used by terminals
+ *      to set titles, hyperlinks, etc. Often emitted by progress reporters.
+ *   3. Two-byte ESC-prefixed sequences for charset designation
+ *      (`\x1b(B`, `\x1b)0`, …) emitted by some shells before / after
+ *      mode-switching.
  */
 function removeAnsiSequences(output: string): string {
-  return output.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+  return output.replace(
+    /\x1b\[[\d;?><=]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]/g,
+    "",
+  );
 }
 
 /**

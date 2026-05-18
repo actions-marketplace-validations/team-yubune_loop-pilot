@@ -19204,6 +19204,22 @@ function loadBaseConfig() {
     throw new Error(`CHECK_COMMAND ${JSON.stringify(checkCommand)} was rejected by check-command-allowlist: ${checkCommandValidation.reason}. See docs/operations/security.md (CHECK_COMMAND validation) for the allowlist and migration steps.`);
   }
   const codexReviewRequestToken = input("codex-review-request-token", "CODEX_REVIEW_REQUEST_TOKEN", githubToken);
+  const MODEL_NAME_FORBIDDEN_RE = /[\s'"`\\;|&<>$]|[\x00-\x1f\x7f]/;
+  function isValidModelName(value) {
+    if (value.length === 0)
+      return false;
+    if (value.startsWith("-"))
+      return false;
+    return !MODEL_NAME_FORBIDDEN_RE.test(value);
+  }
+  const claudeCodeModelBase = input("claude-code-model-base", "CLAUDE_CODE_MODEL_BASE", DEFAULT_CLAUDE_CODE_MODEL_BASE);
+  if (!isValidModelName(claudeCodeModelBase)) {
+    throw new Error(`CLAUDE_CODE_MODEL_BASE ${JSON.stringify(claudeCodeModelBase)} is rejected: model identifiers must not start with \`-\` (argv-flag injection guard) and must not contain whitespace, quotes, or shell metacharacters. Provider-form identifiers (Bedrock ARN, Vertex AI, context variants like \`claude-opus-4-7:1m\`) are supported.`);
+  }
+  const claudeCodeModelEscalated = input("claude-code-model-escalated", "CLAUDE_CODE_MODEL_ESCALATED", DEFAULT_CLAUDE_CODE_MODEL_ESCALATED);
+  if (!isValidModelName(claudeCodeModelEscalated)) {
+    throw new Error(`CLAUDE_CODE_MODEL_ESCALATED ${JSON.stringify(claudeCodeModelEscalated)} is rejected: model identifiers must not start with \`-\` (argv-flag injection guard) and must not contain whitespace, quotes, or shell metacharacters. Provider-form identifiers (Bedrock ARN, Vertex AI, context variants like \`claude-opus-4-7:1m\`) are supported.`);
+  }
   const autoReviewPushToken = input("auto-review-push-token", "AUTO_REVIEW_PUSH_TOKEN", "");
   return {
     maxReviewIterations: intInput("max-review-iterations", "MAX_REVIEW_ITERATIONS", 20, 1),
@@ -19228,8 +19244,8 @@ function loadBaseConfig() {
     autoReviewLabel: input("auto-review-label", "AUTO_REVIEW_LABEL", ""),
     autoReviewFullAuto: boolInput("auto-review-full-auto", "AUTO_REVIEW_FULL_AUTO", false),
     autoReviewRestartRoles: input("auto-review-restart-roles", "AUTO_REVIEW_RESTART_ROLES", "author,write,maintain,admin"),
-    claudeCodeModelBase: input("claude-code-model-base", "CLAUDE_CODE_MODEL_BASE", DEFAULT_CLAUDE_CODE_MODEL_BASE),
-    claudeCodeModelEscalated: input("claude-code-model-escalated", "CLAUDE_CODE_MODEL_ESCALATED", DEFAULT_CLAUDE_CODE_MODEL_ESCALATED),
+    claudeCodeModelBase,
+    claudeCodeModelEscalated,
     autoMergeOnClean: boolInput("auto-merge-on-clean", "AUTO_REVIEW_AUTO_MERGE", false),
     autoMergePollSeconds: intInput("auto-merge-poll-seconds", "AUTO_REVIEW_AUTO_MERGE_POLL_SECONDS", 15, 1),
     autoMergeTimeoutMinutes: intInput("auto-merge-timeout-minutes", "AUTO_REVIEW_AUTO_MERGE_TIMEOUT_MINUTES", 10, 1),
@@ -19358,7 +19374,11 @@ async function ghApi(args, token, opts = {}) {
   }
 }
 
+// dist/claude-code-repair-request.js
+var PREVIOUS_CHECK_FAILURE_MAX_CHARS = 2e4;
+
 // dist/state-manager.js
+var PREVIOUS_CHECK_FAILURE_READ_LIMIT = PREVIOUS_CHECK_FAILURE_MAX_CHARS * 2;
 var STATE_MARKER = "auto-review-state";
 var STATE_COMMENT_OPEN = "<!-- " + STATE_MARKER;
 var STATE_COMMENT_CLOSE = "-->";
@@ -19384,7 +19404,7 @@ function validateState(obj) {
   if (typeof obj !== "object" || obj === null)
     return false;
   const s = obj;
-  if (typeof s.iterationCount !== "number" || s.iterationCount < 0)
+  if (!Number.isSafeInteger(s.iterationCount) || s.iterationCount < 0)
     return false;
   if (typeof s.status !== "string" || !VALID_STATUSES.has(s.status))
     return false;
@@ -19403,6 +19423,9 @@ function validateState(obj) {
   if (s.stopReason !== null && typeof s.stopReason !== "string")
     return false;
   if ("previousCheckFailure" in s && s.previousCheckFailure !== null && typeof s.previousCheckFailure !== "string") {
+    return false;
+  }
+  if (typeof s.previousCheckFailure === "string" && s.previousCheckFailure.length > PREVIOUS_CHECK_FAILURE_READ_LIMIT) {
     return false;
   }
   if ("fixingStartedAt" in s && s.fixingStartedAt !== null && typeof s.fixingStartedAt !== "string") {

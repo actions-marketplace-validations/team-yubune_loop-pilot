@@ -245,6 +245,88 @@ describe("terminal poster wiring (TY-259)", () => {
     expect(mockedGhApi).not.toHaveBeenCalled();
   });
 
+  it("postTestFailureComment fences output safely against ``` AND ~~~ runs (TY-275 #8)", async () => {
+    // GitHub markdown treats both backtick and tilde runs of length >= 3 as
+    // code-fence openers. A payload containing either could break out of the
+    // outer fence and start interpreting CHECK_COMMAND output as markdown.
+    // The fence picks a backtick run longer than any internal run.
+    const payload = [
+      "vitest output:",
+      "```ts",
+      "test code with internal triple-backticks",
+      "```",
+      "and tilde fence:",
+      "~~~",
+      "extra content",
+      "~~~",
+    ].join("\n");
+    await postTestFailureComment(
+      "team-yubune",
+      "test-auto-ai-review",
+      65,
+      payload,
+      "token",
+    );
+
+    // The status comment helper receives an entry whose body is the fenced
+    // output. Inspect the call and verify the outer fence is at least 4
+    // backticks (longer than the 3-backtick internal run).
+    expect(mockedUpsertStatusComment).toHaveBeenCalledTimes(1);
+    const call = mockedUpsertStatusComment.mock.calls[0]!;
+    // The entry body is buried in the upsertStatusComment args; check the
+    // payload made it through and the fence is a >=4-backtick run.
+    const bodyArg = JSON.stringify(call);
+    expect(bodyArg).toMatch(/````+/);
+    // The payload appears verbatim — the test runner output is NOT mangled
+    // (no `\`\`\`` → `\`\`` replacement that the old escape produced).
+    expect(bodyArg).toContain("test code with internal triple-backticks");
+  });
+
+  it("caps fence length so pathologically long backtick runs cannot overflow GitHub's comment limit (TY-275 #8, Codex r3257188563)", async () => {
+    // A payload containing a 500-char backtick run previously caused the
+    // fence to be 501 chars × 2 = 1002 chars of pure fence overhead. Scaled
+    // to 60,000 chars (sanitizeOutput's cap) this blows GitHub's 65,536-char
+    // body limit and the stop comment post fails entirely — losing the
+    // operator's only visible stop signal.
+    const longBacktickRun = "`".repeat(500);
+    const payload = `before\n${longBacktickRun}\nafter`;
+    await postTestFailureComment(
+      "team-yubune",
+      "test-auto-ai-review",
+      65,
+      payload,
+      "token",
+    );
+
+    expect(mockedUpsertStatusComment).toHaveBeenCalledTimes(1);
+    const bodyArg = JSON.stringify(mockedUpsertStatusComment.mock.calls[0]!);
+
+    // The 500-char backtick run must have been collapsed to ≤ 100 chars in
+    // the payload before the fence was computed; the fence is therefore
+    // ≤ 101 chars rather than 501. We assert the cap is honored: the body
+    // must NOT contain any 200+ char backtick run (which would indicate
+    // either the original payload survived or the fence exploded).
+    expect(bodyArg).not.toMatch(/`{200,}/);
+    // The body still contains the surrounding context.
+    expect(bodyArg).toContain("before");
+    expect(bodyArg).toContain("after");
+  });
+
+  it("caps fence length for pathologically long tilde runs (TY-275 #8, Codex r3257188563)", async () => {
+    const longTildeRun = "~".repeat(500);
+    await postTestFailureComment(
+      "team-yubune",
+      "test-auto-ai-review",
+      65,
+      `before\n${longTildeRun}\nafter`,
+      "token",
+    );
+
+    const bodyArg = JSON.stringify(mockedUpsertStatusComment.mock.calls[0]!);
+    // Tilde runs in the payload must also be collapsed to ≤ 100 chars.
+    expect(bodyArg).not.toMatch(/~{200,}/);
+  });
+
   it("returns the status comment ID even when the terminal notification post fails", async () => {
     mockedGhApi.mockRejectedValueOnce(new Error("rate limited"));
 

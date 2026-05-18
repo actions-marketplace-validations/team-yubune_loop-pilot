@@ -70,6 +70,67 @@ describe("parseRestartCommand", () => {
     });
   });
 
+  it("accepts /restart-review followed by a multi-line rationale (TY-275 #4)", () => {
+    // Operators often append a trailing rationale after the command. The
+    // previous parser carried the newline-containing tail into the `--hard`
+    // comparison and rejected the comment as `unsupported_option`. First-line
+    // extraction keeps the rationale freedom while still strictly validating
+    // the command itself.
+    const body = "/restart-review --hard\n\n(理由: max iterations に到達したため履歴をリセット)";
+    expect(parseRestartCommand(body)).toEqual({ isRestart: true, mode: "hard" });
+  });
+
+  it("accepts soft /restart-review followed by a rationale line (TY-275 #4)", () => {
+    const body = "/restart-review\n\nQuotaを使い切ったのでquota回復後に再開";
+    expect(parseRestartCommand(body)).toEqual({ isRestart: true, mode: "soft" });
+  });
+
+  it("rejects /restart-review with --hard on a separate line (Codex r3257480253 — TY-275 #4 follow-up)", () => {
+    // Before the follow-up, first-line extraction would reduce the comment to
+    // just `/restart-review` and silently demote the operator's intended
+    // hard restart to a soft one. We now detect continuation-line flags and
+    // reject the whole command, preserving the pre-TY-275 strictness for
+    // this specific case.
+    expect(parseRestartCommand("/restart-review\n--hard")).toEqual({
+      isRestart: true,
+      invalidReason: "unsupported_option",
+    });
+    expect(parseRestartCommand("/restart-review\n\n--hard")).toEqual({
+      isRestart: true,
+      invalidReason: "unsupported_option",
+    });
+    expect(parseRestartCommand("/restart-review\n  --hard")).toEqual({
+      isRestart: true,
+      invalidReason: "unsupported_option",
+    });
+  });
+
+  it("does not reject when continuation lines are plain prose (no `--` prefix)", () => {
+    // Sanity: the new continuation-flag check must not regress the rationale
+    // acceptance from TY-275 #4. Lines like `--- separator ---` or `note: …`
+    // should still pass through.
+    const body = "/restart-review --hard\n\n--- separator ---\n(note: cleared per ops review)";
+    // `---` matches /^--/ so this would naively trigger the new guard.
+    // Verify the regex `/^\s*--\w/` requires a word character after `--`,
+    // which `---` does NOT satisfy (the third char is `-`, not a word char).
+    expect(parseRestartCommand(body)).toEqual({ isRestart: true, mode: "hard" });
+  });
+
+  it("returns isRestart=false for non-restart comments even when they contain `--<word>` continuation lines (Codex r3257717909)", () => {
+    // The continuation-flag check must run AFTER confirming the first line
+    // is a restart command. Otherwise unrelated comments like the ones below
+    // would be misclassified as restart commands with `unsupported_option`,
+    // leaking false-positive restart attempts to callers that don't
+    // pre-filter via isRestartCommandLike.
+    expect(parseRestartCommand("notes\n--todo")).toEqual({ isRestart: false });
+    expect(parseRestartCommand("TODO list:\n--fix bug\n--add test")).toEqual({
+      isRestart: false,
+    });
+    expect(parseRestartCommand("@bot what is `--hard`?\n--hard")).toEqual({
+      isRestart: false,
+    });
+  });
+
   it("detects restart-like comments for workflow/runtime dispatch", () => {
     expect(isRestartCommandLike("/restart-review")).toBe(true);
     expect(isRestartCommandLike("/restart-review --hard")).toBe(true);
@@ -639,6 +700,66 @@ describe("handleRestartCommand permission gate (TY-272 #E)", () => {
       "❌ Restart rejected: insufficient permission.",
     );
     expect(deps.postComment.mock.calls[0][3]).not.toContain("unsupported option");
+  });
+});
+
+describe("AUTO_REVIEW_RESTART_ROLES validation (TY-275 #2)", () => {
+  it("warns and drops unknown role tokens (typical typo: 'admins')", async () => {
+    const deps = makeDeps();
+    deps.getCollaboratorPermission.mockResolvedValue("admin");
+
+    // The PR author hits the gate with restartRoles="admins" (typo). The
+    // role token isn't recognized, so it's dropped — the author branch
+    // never fires, and the collaborator check still passes because the
+    // user actually has admin permission. A warning surfaces the typo.
+    await handleRestartCommand(
+      {
+        owner: "team-yubune",
+        repo: "test-auto-ai-review",
+        prNumber: 18,
+        triggerCommentId: 777,
+        triggerCommentBody: "/restart-review",
+        triggerUserLogin: "ops",
+        restartRoles: "admins,write",
+        githubToken: "token",
+        codexReviewRequestToken: "codex-token",
+        stateResult: foundState(makeState()),
+      },
+      deps,
+    );
+
+    const warnings = deps.warning.mock.calls.map((c) => c[0]).join("\n");
+    expect(warnings).toMatch(/Unknown role\(s\) ignored.*admins/);
+  });
+
+  it("silently rejects all restarts when every role token is unknown", async () => {
+    const deps = makeDeps();
+    deps.getCollaboratorPermission.mockResolvedValue("read");
+
+    await handleRestartCommand(
+      {
+        owner: "team-yubune",
+        repo: "test-auto-ai-review",
+        prNumber: 18,
+        triggerCommentId: 777,
+        triggerCommentBody: "/restart-review",
+        triggerUserLogin: "ops",
+        // All typos → effective role set is empty → permission gate rejects.
+        restartRoles: "admins,maintainers,authorr",
+        githubToken: "token",
+        codexReviewRequestToken: "codex-token",
+        stateResult: foundState(makeState()),
+      },
+      deps,
+    );
+
+    // postCodexReviewRequest must NOT have been called (gate rejected).
+    expect(deps.postCodexReviewRequest).not.toHaveBeenCalled();
+    // Warning must surface all three typos for ops to debug.
+    const warnings = deps.warning.mock.calls.map((c) => c[0]).join("\n");
+    expect(warnings).toMatch(/admins/);
+    expect(warnings).toMatch(/maintainers/);
+    expect(warnings).toMatch(/authorr/);
   });
 });
 
