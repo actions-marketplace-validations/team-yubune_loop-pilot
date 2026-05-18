@@ -258,8 +258,8 @@ function applyFindingCaps(findings: ClaudeCodeRepairFinding[]): {
 const INSTRUCTION_LINES: readonly string[] = [
   "1. Each Codex finding's `path` and `line` mark an investigation entry point, NOT the bounded scope of the fix. Explore related files, callers, type definitions, existing tests, and configuration as needed to produce a consistent repair.",
   "2. Treat existing tests as the specification. If a test captures the intended behavior, do not weaken or rewrite it to make a faulty fix pass; fix the production code instead.",
-  "3. If your edits surface type errors, test failures, or caller mismatches elsewhere in the repository, investigate those related sites and repair them so the codebase remains consistent.",
-  "4. Make the minimal change required to address each finding. Do not perform unrelated refactors, formatting sweeps, dependency upgrades, or style changes.",
+  "3. If your own edits cause new type errors, test failures, or caller mismatches elsewhere in the repository, you MUST fix those induced breakages — they count as part of the repair, not as \"unrelated refactor\". Do not, however, fix pre-existing issues that your edits did not surface.",
+  "4. Beyond #3, make the minimal change required to address each finding. Do not perform unrelated refactors, formatting sweeps, dependency upgrades, or style changes for code you did not need to touch.",
   "5. Do not read or output secrets such as API keys, tokens, credentials, or the contents of environment variables that may carry secrets.",
   "6. Do not assume network access. Do not add new external dependencies and do not call out to external services as part of the repair.",
   "7. Do not execute arbitrary shell commands. Only the configured CHECK_COMMAND is expected to run as part of verification.",

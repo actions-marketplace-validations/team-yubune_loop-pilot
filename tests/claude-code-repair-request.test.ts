@@ -392,7 +392,10 @@ describe("buildClaudeCodeRepairPrompt", () => {
     // existing tests are the specification
     expect(prompt).toMatch(/existing tests as the specification/i);
 
-    // minimal change, no unrelated refactors
+    // TY-279: #3 explicitly contrasts induced breakages vs pre-existing,
+    //         #4 keeps the minimal-change / unrelated-refactors framing.
+    expect(prompt).toMatch(/induced breakages/i);
+    expect(prompt).toMatch(/pre-existing/i);
     expect(prompt).toMatch(/minimal change/i);
     expect(prompt).toMatch(/unrelated refactors/i);
 
