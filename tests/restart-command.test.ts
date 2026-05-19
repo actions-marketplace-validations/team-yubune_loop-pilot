@@ -54,7 +54,7 @@ function makeDeps() {
     postCodexReviewRequest: vi.fn<RestartCommandDeps["postCodexReviewRequest"]>(
       async () => 45678,
     ),
-    addEyesReaction: vi.fn<RestartCommandDeps["addEyesReaction"]>(async () => undefined),
+    addRestartReaction: vi.fn<RestartCommandDeps["addRestartReaction"]>(async () => undefined),
     warning: vi.fn<RestartCommandDeps["warning"]>(),
   };
 }
@@ -482,7 +482,7 @@ describe("handleRestartCommand", () => {
     expect(deps.postComment.mock.calls[0][3]).toContain("mode: soft");
     expect(deps.postComment.mock.calls[0][3]).toContain("from: no_findings");
     expect(deps.postComment.mock.calls[0][3]).toContain("reviewRequestCommentId: 45678");
-    expect(deps.addEyesReaction).toHaveBeenCalledWith(
+    expect(deps.addRestartReaction).toHaveBeenCalledWith(
       "team-yubune",
       "test-auto-ai-review",
       777,

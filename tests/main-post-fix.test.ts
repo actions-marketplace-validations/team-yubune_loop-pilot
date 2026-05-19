@@ -105,6 +105,7 @@ function makeDeps(
     postCodexReviewRequest: vi.fn().mockResolvedValue(22),
     postStopComment: vi.fn().mockResolvedValue(33),
     postTestFailureComment: vi.fn().mockResolvedValue(44),
+    postTerminalNotification: vi.fn().mockResolvedValue(undefined),
     setSecret: vi.fn(),
     info: vi.fn(),
     warning: vi.fn(),
@@ -750,6 +751,21 @@ describe("runPostFix", () => {
       "test-auto-ai-review",
       99,
       "tsc error: unexpected token",
+      "github-token",
+    );
+    // TY-290 #2: status-comment edit does not fire GitHub notifications, so
+    // `failureExit` must follow `postTestFailureComment` (status update) with
+    // an explicit top-level 🛑 comment so operators see CHECK_COMMAND
+    // failures in their inbox / mobile push.
+    expect(deps.postTerminalNotification).toHaveBeenCalledWith(
+      "team-yubune",
+      "test-auto-ai-review",
+      99,
+      44,
+      {
+        kind: "stopped",
+        stopReason: "test_failure",
+      },
       "github-token",
     );
   });

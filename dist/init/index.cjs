@@ -19184,7 +19184,7 @@ function validateCheckCommand(rawCommand) {
 }
 
 // dist/config.js
-var DEFAULT_SEVERITY_THRESHOLD = "P2";
+var DEFAULT_SEVERITY_THRESHOLD = "P3";
 var DEFAULT_CLAUDE_CODE_MODEL_BASE = "claude-sonnet-4-6";
 var DEFAULT_CLAUDE_CODE_MODEL_ESCALATED = "claude-opus-4-7";
 function loadInitConfig() {

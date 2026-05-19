@@ -3,7 +3,7 @@
 ## 停止条件
 
 ### 正常終了
-- 最新 Codex review の閾値以上 finding が 0 件（`AUTO_REVIEW_SEVERITY_THRESHOLD` で制御、default `P2`。TY-256）
+- 最新 Codex review の閾値以上 finding が 0 件（`AUTO_REVIEW_SEVERITY_THRESHOLD` で制御、default `P3`。TY-256）
 
 PR #7 で実測済み。Codex の `Codex Review: Didn't find any major issues.` コメントを受け、Workflow B が `done / no_findings` に更新し、完了コメントを投稿した。
 
@@ -211,6 +211,15 @@ See the [status comment](https://github.com/<owner>/<repo>/pull/<N>#issuecomment
 ```markdown
 ✅ **Auto-review completed** — no findings remaining (3 iterations).
 
+See the [status comment](https://github.com/<owner>/<repo>/pull/<N>#issuecomment-<id>) for the full history.
+```
+
+CHECK_COMMAND 失敗 (`stop_reason: test_failure`) のときは、status コメントに `postTestFailureComment` が nonce-fence 付きで CHECK_COMMAND 出力を記録した上で、別途同じ `stopped` フォーマットの top-level 通知が投稿される (TY-290 #2)。出力本文の二重投稿は避けるため、top-level 側はリンクのみで簡潔に出る:
+
+```markdown
+🛑 **Auto-review stopped** — CHECK_COMMAND failed after fix.
+
+Open in-scope findings remaining: 0. Manual intervention required.
 See the [status comment](https://github.com/<owner>/<repo>/pull/<N>#issuecomment-<id>) for the full history.
 ```
 

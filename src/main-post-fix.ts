@@ -38,6 +38,7 @@ import {
   postClaudeCodeActionFixSummary as defaultPostClaudeCodeActionFixSummary,
   postCodexReviewRequest as defaultPostCodexReviewRequest,
   postStopComment as defaultPostStopComment,
+  postTerminalNotification as defaultPostTerminalNotification,
   postTestFailureComment as defaultPostTestFailureComment,
 } from "./comment-poster.js";
 import { registerAllSecrets } from "./secrets.js";
@@ -84,6 +85,14 @@ export interface PostFixDeps {
   postCodexReviewRequest: typeof defaultPostCodexReviewRequest;
   postStopComment: typeof defaultPostStopComment;
   postTestFailureComment: typeof defaultPostTestFailureComment;
+  /**
+   * Posts a new top-level 🛑 / ✅ / ⚠️ PR comment to restore GitHub
+   * notifications on terminal events. `postStopComment` calls this internally,
+   * but the `test_failure` branch uses `postTestFailureComment` (which only
+   * edits the aggregated status comment) and must invoke this explicitly so
+   * operators get a notification for CHECK_COMMAND failures too.
+   */
+  postTerminalNotification: typeof defaultPostTerminalNotification;
   setSecret: (secret: string) => void;
   info: (message: string) => void;
   warning: (message: string) => void;
@@ -153,6 +162,7 @@ const defaultDeps: PostFixDeps = {
   postCodexReviewRequest: defaultPostCodexReviewRequest,
   postStopComment: defaultPostStopComment,
   postTestFailureComment: defaultPostTestFailureComment,
+  postTerminalNotification: defaultPostTerminalNotification,
   setSecret: (secret) => core.setSecret(secret),
   info: (message) => core.info(message),
   warning: (message) => core.warning(message),
@@ -522,11 +532,29 @@ export async function runPostFix(
       return;
     }
     if (opts.stopReason === "test_failure" && opts.postCheckFailureBody) {
-      await deps.postTestFailureComment(
+      // TY-290 #2: `postTestFailureComment` only edits the aggregated status
+      // comment, which does NOT fire a GitHub notification (the same reason
+      // TY-259 split `postTerminalNotification` out of the status upsert).
+      // CHECK_COMMAND failures need operator attention to triage the failing
+      // test / lint / typecheck output, so we follow the status update with
+      // an explicit top-level 🛑 comment via `postTerminalNotification`.
+      const statusCommentId = await deps.postTestFailureComment(
         config.repoOwner,
         config.repoName,
         config.prNumber,
         opts.postCheckFailureBody,
+        config.githubToken,
+      );
+      await deps.postTerminalNotification(
+        config.repoOwner,
+        config.repoName,
+        config.prNumber,
+        statusCommentId,
+        {
+          kind: "stopped",
+          stopReason: "test_failure",
+          remainingFindings: opts.remainingFindings,
+        },
         config.githubToken,
       );
     } else {

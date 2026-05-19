@@ -19273,7 +19273,7 @@ function serializeAllowedBashTools(tools) {
 }
 
 // dist/config.js
-var DEFAULT_SEVERITY_THRESHOLD = "P2";
+var DEFAULT_SEVERITY_THRESHOLD = "P3";
 var DEFAULT_CLAUDE_CODE_MODEL_BASE = "claude-sonnet-4-6";
 var DEFAULT_CLAUDE_CODE_MODEL_ESCALATED = "claude-opus-4-7";
 var DEFAULT_AUTO_REVIEW_LABEL = "auto-review-fix";
@@ -20288,10 +20288,11 @@ function buildTerminalNotificationBody(kind, permalink) {
       ].join("\n");
     case "stopped": {
       const label = STOP_REASON_LABELS[kind.stopReason];
+      const actionLine = kind.remainingFindings !== void 0 ? `Open in-scope findings remaining: ${kind.remainingFindings}. Manual intervention required.` : "Manual intervention required.";
       return [
         `\u{1F6D1} **Auto-review stopped** \u2014 ${label}.`,
         "",
-        `Open in-scope findings remaining: ${kind.remainingFindings}. Manual intervention required.`,
+        actionLine,
         `See the [status comment](${permalink}) for the full history.`
       ].join("\n");
     }
@@ -21003,7 +21004,7 @@ async function handleRestartCommand(context, deps = defaultRestartCommandDeps) {
   ].join("\n"), context.githubToken);
   if (context.triggerCommentId !== 0) {
     try {
-      await deps.addEyesReaction(context.owner, context.repo, context.triggerCommentId, context.githubToken);
+      await deps.addRestartReaction(context.owner, context.repo, context.triggerCommentId, context.githubToken);
     } catch {
     }
   }
@@ -21094,7 +21095,7 @@ async function getCollaboratorPermission(owner, repo, user, token) {
     return "none";
   }
 }
-async function addEyesReaction(owner, repo, commentId, token) {
+async function addRestartReaction(owner, repo, commentId, token) {
   await ghApi([
     "api",
     `repos/${owner}/${repo}/issues/comments/${commentId}/reactions`,
@@ -21105,10 +21106,17 @@ async function addEyesReaction(owner, repo, commentId, token) {
     "-H",
     "Accept: application/vnd.github+json",
     // TY-269: `--raw-field` (= `-F`) avoids gh CLI's `@<value>` file-read
-    // interpretation. `eyes` is safe here but stay consistent with the
+    // interpretation. `rocket` is safe here but stay consistent with the
     // rest of the codebase.
+    //
+    // 🚀 (rocket) was chosen over 👀 (eyes) because eyes collides with the
+    // reaction Codex posts when it acknowledges a review request — having
+    // both bots add the same reaction made it hard to see at a glance
+    // which side had picked up the work. rocket also reads better as
+    // "Workflow B has been launched" than the more passive "I see your
+    // command".
     "--raw-field",
-    "content=eyes"
+    "content=rocket"
   ], token);
 }
 var defaultRestartCommandDeps = {
@@ -21117,7 +21125,7 @@ var defaultRestartCommandDeps = {
   updateStateComment,
   postComment,
   postStopComment,
-  addEyesReaction,
+  addRestartReaction,
   postCodexReviewRequest,
   warning: (message) => warning(message)
 };

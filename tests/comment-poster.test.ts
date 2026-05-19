@@ -107,6 +107,21 @@ describe("buildTerminalNotificationBody (TY-259)", () => {
     expect(body).toContain(`[status comment](${permalink})`);
   });
 
+  it("renders the stopped body without a count when remainingFindings is omitted", () => {
+    const body = buildTerminalNotificationBody(
+      {
+        kind: "stopped",
+        stopReason: "test_failure",
+      },
+      permalink,
+    );
+    expect(body).toContain("🛑");
+    expect(body).toContain("Auto-review stopped");
+    expect(body).toContain("Manual intervention required");
+    expect(body).not.toContain("Open in-scope findings remaining");
+    expect(body).toContain(`[status comment](${permalink})`);
+  });
+
   it("renders the init_incomplete body with operator guidance", () => {
     const body = buildTerminalNotificationBody(
       { kind: "init_incomplete" },

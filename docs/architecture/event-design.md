@@ -237,7 +237,7 @@ Workflow B は GitHub API で取得した `.head.repo.full_name` が空または
 - `chatgpt-codex-connector[bot]` のコメントのみフィルタ
 - **取得範囲の絞り込み:** `last_codex_review_received_at` 以降に `created_at` を持つコメントのみを対象とする。過去の iteration のコメントを再処理しないため（詳細は後述「インラインコメントの取得範囲」を参照）
 - severity バッジの正規表現で抽出（→ [Severity パーサー仕様](../specs/severity-parser.md)）。Codex finding は P0 / P1 / P2 / P3 を識別する（TY-256）
-- `AUTO_REVIEW_SEVERITY_THRESHOLD`（default `P2`）以上の severity の finding を修正対象に残し、それ未満は skip する。skip 件数は observability ログとして出力する
+- `AUTO_REVIEW_SEVERITY_THRESHOLD`（default `P3`）以上の severity の finding を修正対象に残し、それ未満は skip する。skip 件数は observability ログとして出力する
   - severity が読み取れなかった finding は `core.warning("[review-collector] Skipped N comments due to unparseable severity; check parser regex.")` で件数報告（parser regex 要見直しサイン）
   - threshold 未達 (例: threshold=`P2` で P3) の finding は `core.info("[review-collector] Skipped N findings below threshold (threshold=P2).")` で件数報告
   - 両者を分けることで「Codex の形式変更で全件 silent 脱落」を検知できる

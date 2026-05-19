@@ -78,7 +78,7 @@ async function applyStatusUpdate(
  */
 export type TerminalNotificationKind =
   | { kind: "done"; iterations: number }
-  | { kind: "stopped"; stopReason: StopReason; remainingFindings: number }
+  | { kind: "stopped"; stopReason: StopReason; remainingFindings?: number }
   | { kind: "init_incomplete" };
 
 /**
@@ -112,10 +112,14 @@ export function buildTerminalNotificationBody(
       ].join("\n");
     case "stopped": {
       const label = STOP_REASON_LABELS[kind.stopReason];
+      const actionLine =
+        kind.remainingFindings !== undefined
+          ? `Open in-scope findings remaining: ${kind.remainingFindings}. Manual intervention required.`
+          : "Manual intervention required.";
       return [
         `🛑 **Auto-review stopped** — ${label}.`,
         "",
-        `Open in-scope findings remaining: ${kind.remainingFindings}. Manual intervention required.`,
+        actionLine,
         `See the [status comment](${permalink}) for the full history.`,
       ].join("\n");
     }

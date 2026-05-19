@@ -206,7 +206,7 @@ export interface RestartCommandDeps {
     token: string,
   ) => Promise<number>;
   postStopComment: typeof defaultPostStopComment;
-  addEyesReaction: (
+  addRestartReaction: (
     owner: string,
     repo: string,
     commentId: number,
@@ -406,7 +406,7 @@ export async function handleRestartCommand(
   );
   if (context.triggerCommentId !== 0) {
     try {
-      await deps.addEyesReaction(
+      await deps.addRestartReaction(
         context.owner,
         context.repo,
         context.triggerCommentId,
@@ -593,7 +593,7 @@ async function getCollaboratorPermission(
   }
 }
 
-async function addEyesReaction(
+async function addRestartReaction(
   owner: string,
   repo: string,
   commentId: number,
@@ -610,10 +610,17 @@ async function addEyesReaction(
       "-H",
       "Accept: application/vnd.github+json",
       // TY-269: `--raw-field` (= `-F`) avoids gh CLI's `@<value>` file-read
-      // interpretation. `eyes` is safe here but stay consistent with the
+      // interpretation. `rocket` is safe here but stay consistent with the
       // rest of the codebase.
+      //
+      // 🚀 (rocket) was chosen over 👀 (eyes) because eyes collides with the
+      // reaction Codex posts when it acknowledges a review request — having
+      // both bots add the same reaction made it hard to see at a glance
+      // which side had picked up the work. rocket also reads better as
+      // "Workflow B has been launched" than the more passive "I see your
+      // command".
       "--raw-field",
-      "content=eyes",
+      "content=rocket",
     ],
     token,
   );
@@ -625,7 +632,7 @@ const defaultRestartCommandDeps: RestartCommandDeps = {
   updateStateComment: defaultUpdateStateComment,
   postComment: defaultPostComment,
   postStopComment: defaultPostStopComment,
-  addEyesReaction,
+  addRestartReaction,
   postCodexReviewRequest: defaultPostCodexReviewRequest,
   warning: (message: string) => core.warning(message),
 };

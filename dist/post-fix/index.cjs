@@ -19150,7 +19150,7 @@ function validateCheckCommand(rawCommand) {
 }
 
 // dist/config.js
-var DEFAULT_SEVERITY_THRESHOLD = "P2";
+var DEFAULT_SEVERITY_THRESHOLD = "P3";
 var DEFAULT_CLAUDE_CODE_MODEL_BASE = "claude-sonnet-4-6";
 var DEFAULT_CLAUDE_CODE_MODEL_ESCALATED = "claude-opus-4-7";
 function loadInitConfig() {
@@ -19935,10 +19935,11 @@ function buildTerminalNotificationBody(kind, permalink) {
       ].join("\n");
     case "stopped": {
       const label = STOP_REASON_LABELS[kind.stopReason];
+      const actionLine = kind.remainingFindings !== void 0 ? `Open in-scope findings remaining: ${kind.remainingFindings}. Manual intervention required.` : "Manual intervention required.";
       return [
         `\u{1F6D1} **Auto-review stopped** \u2014 ${label}.`,
         "",
-        `Open in-scope findings remaining: ${kind.remainingFindings}. Manual intervention required.`,
+        actionLine,
         `See the [status comment](${permalink}) for the full history.`
       ].join("\n");
     }
@@ -20918,6 +20919,7 @@ var defaultDeps3 = {
   postCodexReviewRequest,
   postStopComment,
   postTestFailureComment,
+  postTerminalNotification,
   setSecret: (secret) => setSecret(secret),
   info: (message) => info(message),
   warning: (message) => warning(message),
@@ -21119,7 +21121,12 @@ async function runPostFix(config, deps = defaultDeps3, inputs = readPostFixInput
       return;
     }
     if (opts.stopReason === "test_failure" && opts.postCheckFailureBody) {
-      await deps.postTestFailureComment(config.repoOwner, config.repoName, config.prNumber, opts.postCheckFailureBody, config.githubToken);
+      const statusCommentId = await deps.postTestFailureComment(config.repoOwner, config.repoName, config.prNumber, opts.postCheckFailureBody, config.githubToken);
+      await deps.postTerminalNotification(config.repoOwner, config.repoName, config.prNumber, statusCommentId, {
+        kind: "stopped",
+        stopReason: "test_failure",
+        remainingFindings: opts.remainingFindings
+      }, config.githubToken);
     } else {
       await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, opts.stopReason, inputs.triggerCommentId, opts.remainingFindings ?? 0, opts.detail, config.githubToken);
     }

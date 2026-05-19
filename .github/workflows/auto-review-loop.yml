@@ -215,7 +215,7 @@ jobs:
           auto-merge-on-clean: ${{ vars.AUTO_REVIEW_AUTO_MERGE || 'false' }}
           auto-merge-poll-seconds: ${{ vars.AUTO_REVIEW_AUTO_MERGE_POLL_SECONDS || '15' }}
           auto-merge-timeout-minutes: ${{ vars.AUTO_REVIEW_AUTO_MERGE_TIMEOUT_MINUTES || '10' }}
-          severity-threshold: ${{ vars.AUTO_REVIEW_SEVERITY_THRESHOLD || 'P2' }}
+          severity-threshold: ${{ vars.AUTO_REVIEW_SEVERITY_THRESHOLD || 'P3' }}
           # TY-272 #A: trusted state-comment author override. Empty falls
           # back to `github-actions[bot]`. Set the Repository variable when
           # state comments are authored by a GitHub App / machine user.

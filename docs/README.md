@@ -12,9 +12,9 @@ PoC の主要 E2E は PR #7 / TY-11 で確認済み。
 - `CHECK_COMMAND`
 - commit/push
 - 再 `@codex review`
-- 閾値以上 (default `P2`) の finding が解消された `done` 終了
+- 閾値以上 (default `P3`) の finding が解消された `done` 終了
 
-現在の実装では P0/P1/P2 を自動修正対象とし、停止後・完了後は `/restart-review` または `/restart-review --hard` で再度レビュー・修正ループにかけられる。詳細は [推奨フローと状態管理](architecture/flow-and-state.md) と [停止条件とリカバリ](operations/stop-and-recovery.md) を参照する。
+現在の実装では P0/P1/P2/P3 をすべて自動修正対象とし（default `P3`、`AUTO_REVIEW_SEVERITY_THRESHOLD` で変更可能）、停止後・完了後は `/restart-review` または `/restart-review --hard` で再度レビュー・修正ループにかけられる。詳細は [推奨フローと状態管理](architecture/flow-and-state.md) と [停止条件とリカバリ](operations/stop-and-recovery.md) を参照する。
 
 本番移植前の残課題は [本番移植チェックリスト](checklists/production-migration.md) に集約する。次に読むべき資料は、現状確認なら [PoC チェックリスト](checklists/poc-checklist.md)、移植判断なら [本番移植チェックリスト](checklists/production-migration.md)、停止後の復旧手順なら [停止条件とリカバリ](operations/stop-and-recovery.md)。
 
