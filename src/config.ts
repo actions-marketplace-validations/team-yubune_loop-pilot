@@ -257,11 +257,27 @@ function loadBaseConfig(): BaseConfig {
   }
   const autoReviewPushToken = input("auto-review-push-token", "AUTO_REVIEW_PUSH_TOKEN", "");
 
+  // TY-289 #2: BUILD_COMMAND runs through the same `execAsync` shell path as
+  // CHECK_COMMAND (`src/build-runner.ts`), so the same allowlist must gate
+  // it at config load. Empty default means "skip BUILD_COMMAND" (TY-281
+  // baseline behavior) and is intentionally not validated — only non-empty
+  // values are checked. Failing here keeps init / pre-fix / post-fix
+  // symmetric with the CHECK_COMMAND validation immediately above.
+  const buildCommand = input("build-command", "BUILD_COMMAND", "");
+  if (buildCommand !== "") {
+    const buildCommandValidation = validateCheckCommand(buildCommand);
+    if (!buildCommandValidation.ok) {
+      throw new Error(
+        `BUILD_COMMAND ${JSON.stringify(buildCommand)} was rejected by check-command-allowlist: ${buildCommandValidation.reason}. See docs/operations/security.md (CHECK_COMMAND validation) for the allowlist; multi-step builds should be wrapped in a package.json script or Makefile target rather than chained with shell operators.`,
+      );
+    }
+  }
+
   return {
     maxReviewIterations: intInput("max-review-iterations", "MAX_REVIEW_ITERATIONS", 20, 1),
     debounceSeconds: intInput("debounce-seconds", "DEBOUNCE_SECONDS", 90, 0),
     checkCommand,
-    buildCommand: input("build-command", "BUILD_COMMAND", ""),
+    buildCommand,
     codexBotLogin: input("codex-bot-login", "CODEX_BOT_LOGIN", "chatgpt-codex-connector[bot]"),
     stabilizeIntervalSeconds: intInput(
       "stabilize-interval-seconds",

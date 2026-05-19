@@ -19221,11 +19221,18 @@ function loadBaseConfig() {
     throw new Error(`CLAUDE_CODE_MODEL_ESCALATED ${JSON.stringify(claudeCodeModelEscalated)} is rejected: model identifiers must not start with \`-\` (argv-flag injection guard) and must not contain whitespace, quotes, or shell metacharacters. Provider-form identifiers (Bedrock ARN, Vertex AI, context variants like \`claude-opus-4-7:1m\`) are supported.`);
   }
   const autoReviewPushToken = input("auto-review-push-token", "AUTO_REVIEW_PUSH_TOKEN", "");
+  const buildCommand = input("build-command", "BUILD_COMMAND", "");
+  if (buildCommand !== "") {
+    const buildCommandValidation = validateCheckCommand(buildCommand);
+    if (!buildCommandValidation.ok) {
+      throw new Error(`BUILD_COMMAND ${JSON.stringify(buildCommand)} was rejected by check-command-allowlist: ${buildCommandValidation.reason}. See docs/operations/security.md (CHECK_COMMAND validation) for the allowlist; multi-step builds should be wrapped in a package.json script or Makefile target rather than chained with shell operators.`);
+    }
+  }
   return {
     maxReviewIterations: intInput("max-review-iterations", "MAX_REVIEW_ITERATIONS", 20, 1),
     debounceSeconds: intInput("debounce-seconds", "DEBOUNCE_SECONDS", 90, 0),
     checkCommand,
-    buildCommand: input("build-command", "BUILD_COMMAND", ""),
+    buildCommand,
     codexBotLogin: input("codex-bot-login", "CODEX_BOT_LOGIN", "chatgpt-codex-connector[bot]"),
     stabilizeIntervalSeconds: intInput("stabilize-interval-seconds", "STABILIZE_INTERVAL_SECONDS", 10, 1),
     stabilizeCount: intInput("stabilize-count", "STABILIZE_COUNT", 3, 1),

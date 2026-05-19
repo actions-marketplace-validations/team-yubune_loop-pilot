@@ -178,6 +178,7 @@ runs:
         max-review-iterations: ${{ inputs.max-review-iterations }}
         debounce-seconds: ${{ inputs.debounce-seconds }}
         check-command: ${{ inputs.check-command }}
+        build-command: ${{ inputs.build-command }}
         codex-bot-login: ${{ inputs.codex-bot-login }}
         codex-review-marker: ${{ inputs.codex-review-marker }}
         stabilize-interval-seconds: ${{ inputs.stabilize-interval-seconds }}

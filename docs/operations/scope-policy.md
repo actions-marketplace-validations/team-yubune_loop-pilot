@@ -114,7 +114,7 @@ build 後は **緩和版 scope check** (`checkScopeBuildMode`) が走る。Build
 
 これにより、`BUILD_COMMAND=npm run bundle` を Repository variable に設定するだけで `dist/` 配下が auto-fix commit に同梱される。`AUTO_REVIEW_BLOCK_PATHS=!dist/` を併設する必要はない。ただし build command が `.github/` を書き換えるような事故 (CI-rewrite escape hatch) は依然として `scope_violation` で止まる。
 
-複数ステップ (lint + build + post-process など) のニーズには **シェル連結** (`BUILD_COMMAND="npm run lint && npm run build"`) か **npm script ラップ** で対応する。multi-command native support は意図的に付けていない (既存の `CHECK_COMMAND` と同じ方針)。
+複数ステップ (lint + build + post-process など) のニーズには **npm script ラップを推奨** する (例: `package.json` に `"build": "npm run lint && npm run bundle"` を追加して `BUILD_COMMAND=npm run build`)。`&&` をそのまま `BUILD_COMMAND` に書く形は TY-289 #2 の config-load 時 allowlist (`validateCheckCommand`) で **shell metacharacter として reject** される。multi-command native support は意図的に付けていない (既存の `CHECK_COMMAND` と同じ方針)。allowlist の詳細と移行手順は [security.md](security.md) の「CHECK_COMMAND / BUILD_COMMAND validation」節を参照。
 
 エラーハンドリング:
 
