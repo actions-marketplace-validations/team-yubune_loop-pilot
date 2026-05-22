@@ -817,9 +817,79 @@ describe("handleRestartCommand permission gate (TY-272 #E)", () => {
     expect(deps.postComment.mock.calls[0][3]).toContain(
       "❌ Restart rejected: insufficient permission.",
     );
-    expect(deps.postComment.mock.calls[0][3]).not.toContain("state is corrupted");
+    expect(deps.postComment.mock.calls[0][3]).not.toContain("unparseable JSON");
     expect(deps.updateStateComment).not.toHaveBeenCalled();
     expect(deps.postCodexReviewRequest).not.toHaveBeenCalled();
+  });
+
+  it("rejects /restart-review on unparseable state with manual surgery instructions (TY-293 #1)", async () => {
+    const deps = makeDeps();
+    const corruptedState: ReadStateResult = {
+      found: false,
+      corrupted: true,
+      commentId: 42,
+      commentUpdatedAt: "2026-05-09T00:00:00Z",
+    };
+
+    await handleRestartCommand(
+      {
+        owner: "team-yubune",
+        repo: "test-auto-ai-review",
+        prNumber: 18,
+        triggerCommentId: 777,
+        triggerCommentBody: "/restart-review",
+        triggerUserLogin: "racoma-dev",
+        restartRoles: "author,write,maintain,admin",
+        githubToken: "token",
+        codexReviewRequestToken: "codex-token",
+        stateResult: corruptedState,
+      },
+      deps,
+    );
+
+    expect(deps.postComment).toHaveBeenCalledTimes(1);
+    const body = String(deps.postComment.mock.calls[0][3]);
+    expect(body).toContain("unparseable JSON");
+    // TY-293 #1: the rejection comment must spell out that --hard is also a
+    // dead end on this path, so operators don't loop on retries.
+    expect(body).toContain("`/restart-review --hard` will return the same rejection");
+    // Manual surgery is the only recovery; the comment links the exact gh api command.
+    expect(body).toContain("gh api -X DELETE");
+    expect(body).toContain("/repos/team-yubune/test-auto-ai-review/issues/comments/");
+  });
+
+  it("returns the same dead-end rejection on /restart-review --hard against unparseable state (TY-293 #1 regression)", async () => {
+    // Regression guard: operators who hit the unparseable-JSON rejection often
+    // retry with --hard. Both modes must produce the same explanatory message
+    // so the operator immediately understands the path is hand-surgery only.
+    const deps = makeDeps();
+    const corruptedState: ReadStateResult = {
+      found: false,
+      corrupted: true,
+      commentId: 42,
+      commentUpdatedAt: "2026-05-09T00:00:00Z",
+    };
+
+    await handleRestartCommand(
+      {
+        owner: "team-yubune",
+        repo: "test-auto-ai-review",
+        prNumber: 18,
+        triggerCommentId: 777,
+        triggerCommentBody: "/restart-review --hard",
+        triggerUserLogin: "racoma-dev",
+        restartRoles: "author,write,maintain,admin",
+        githubToken: "token",
+        codexReviewRequestToken: "codex-token",
+        stateResult: corruptedState,
+      },
+      deps,
+    );
+
+    expect(deps.postComment).toHaveBeenCalledTimes(1);
+    const body = String(deps.postComment.mock.calls[0][3]);
+    expect(body).toContain("unparseable JSON");
+    expect(body).toContain("`/restart-review --hard` will return the same rejection");
   });
 
   it("checks permission before answering the unsupported-option rejection", async () => {

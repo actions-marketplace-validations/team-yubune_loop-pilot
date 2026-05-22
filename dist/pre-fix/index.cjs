@@ -20374,9 +20374,12 @@ function buildTerminalNotificationBody(kind, permalink) {
     }
     case "init_incomplete":
       return [
-        "\u26A0\uFE0F **Auto-review initialization incomplete**",
+        "\u26A0\uFE0F **Auto-review init incomplete** \u2014 the initial `@codex review` was never posted.",
         "",
-        "Re-run Workflow A or manually post `@codex review`.",
+        "Auto-review is not active on this PR until init runs successfully. Either:",
+        "- Re-run the Workflow A run from the Actions tab, or",
+        "- Re-trigger init by removing and re-adding the gate label (or closing / reopening the PR in full-auto mode).",
+        "",
         `See the [status comment](${permalink}) for context.`
       ].join("\n");
   }
@@ -20437,9 +20440,14 @@ async function postFixingStartComment(owner, name, pr, iteration, modelTier, max
 }
 async function postInitIncompleteComment(owner, name, pr, token) {
   const statusCommentId = await applyStatusUpdate2(owner, name, pr, {
-    current: "Init incomplete",
-    nextAction: "Re-run Workflow A or manually post '@codex review'.",
-    newEntry: entry("init_incomplete", "Auto-review initialization incomplete", "Workflow A may have failed before posting the initial review request.")
+    // TY-293 #3 (UX-10): same three operator actions as the YAML fail-safe
+    // in `auto-review-init.yml` and the in-process top-level notification
+    // (`buildTerminalNotificationBody.init_incomplete`). Keeping the
+    // language identical across the three surfaces lets operators recognise
+    // the failure mode regardless of which path posted the comment.
+    current: "Init incomplete \u2014 initial `@codex review` not posted",
+    nextAction: "Re-run Workflow A from the Actions tab, or remove and re-add the gate label.",
+    newEntry: entry("init_incomplete", "Auto-review initialization incomplete", "Workflow A may have failed before posting the initial `@codex review`. Re-run from the Actions tab, or remove and re-add the gate label (or close / reopen the PR in full-auto mode).")
   }, token);
   await postTerminalNotification(owner, name, pr, statusCommentId, { kind: "init_incomplete" }, token);
   return statusCommentId;
@@ -21043,7 +21051,20 @@ async function handleRestartCommand(context, deps = defaultRestartCommandDeps) {
     return { handled: true };
   }
   if (!context.stateResult.found && context.stateResult.corrupted) {
-    await deps.postComment(context.owner, context.repo, context.prNumber, "\u274C Restart cannot apply: state is corrupted. See docs/operations/stop-and-recovery.md.", context.githubToken);
+    const rejection = [
+      "\u274C Restart cannot apply: hidden `auto-review-state` comment is unparseable JSON.",
+      "",
+      "**`/restart-review --hard` will return the same rejection** \u2014 state read fails before the `--hard` clear logic runs, so this path requires manual surgery.",
+      "",
+      "Recovery (operator):",
+      "1. Find the hidden comment whose body contains `<!-- auto-review-state ... -->` on this PR.",
+      `2. \`gh api -X DELETE /repos/${context.owner}/${context.repo}/issues/comments/<id>\` to delete it.`,
+      "3. Remove and re-add the gate label (or, in full-auto mode, close + reopen the PR) so Workflow A re-runs and recreates the state.",
+      "4. Leave an audit comment on the PR with the operator and the reason, for the run history.",
+      "",
+      "See [`docs/operations/stop-and-recovery.md`](docs/operations/stop-and-recovery.md) \u2192 `state_corrupted` \u306E\u5FA9\u65E7 \u2192 1 \u756A\u76EE\u306E\u7D4C\u8DEF (JSON unparseable)."
+    ].join("\n");
+    await deps.postComment(context.owner, context.repo, context.prNumber, rejection, context.githubToken);
     return { handled: true };
   }
   if (!context.stateResult.found) {

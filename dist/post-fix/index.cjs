@@ -20021,9 +20021,12 @@ function buildTerminalNotificationBody(kind, permalink) {
     }
     case "init_incomplete":
       return [
-        "\u26A0\uFE0F **Auto-review initialization incomplete**",
+        "\u26A0\uFE0F **Auto-review init incomplete** \u2014 the initial `@codex review` was never posted.",
         "",
-        "Re-run Workflow A or manually post `@codex review`.",
+        "Auto-review is not active on this PR until init runs successfully. Either:",
+        "- Re-run the Workflow A run from the Actions tab, or",
+        "- Re-trigger init by removing and re-adding the gate label (or closing / reopening the PR in full-auto mode).",
+        "",
         `See the [status comment](${permalink}) for context.`
       ].join("\n");
   }

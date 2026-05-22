@@ -277,11 +277,33 @@ export async function handleRestartCommand(
   }
 
   if (!context.stateResult.found && context.stateResult.corrupted) {
+    // TY-293 #1 (UX-06): unparseable hidden-state JSON cannot be recovered by
+    // `/restart-review --hard` because the early return above intercepts
+    // before `applyRestartToState` can run. The previous one-line rejection
+    // pointed operators at the docs without explaining that `--hard` is also
+    // a dead end on this path, leading them to retry with `--hard`, get the
+    // same rejection, and stall. Spell out the manual `gh api DELETE`
+    // surgery so the comment is self-sufficient (TY-282 #1C's `--hard`
+    // recovery only applies to the *parseable* `state_corrupted` stop reason,
+    // not to this unparseable-JSON path).
+    const rejection = [
+      "❌ Restart cannot apply: hidden `auto-review-state` comment is unparseable JSON.",
+      "",
+      "**`/restart-review --hard` will return the same rejection** — state read fails before the `--hard` clear logic runs, so this path requires manual surgery.",
+      "",
+      "Recovery (operator):",
+      "1. Find the hidden comment whose body contains `<!-- auto-review-state ... -->` on this PR.",
+      `2. \`gh api -X DELETE /repos/${context.owner}/${context.repo}/issues/comments/<id>\` to delete it.`,
+      "3. Remove and re-add the gate label (or, in full-auto mode, close + reopen the PR) so Workflow A re-runs and recreates the state.",
+      "4. Leave an audit comment on the PR with the operator and the reason, for the run history.",
+      "",
+      "See [`docs/operations/stop-and-recovery.md`](docs/operations/stop-and-recovery.md) → `state_corrupted` の復旧 → 1 番目の経路 (JSON unparseable).",
+    ].join("\n");
     await deps.postComment(
       context.owner,
       context.repo,
       context.prNumber,
-      "❌ Restart cannot apply: state is corrupted. See docs/operations/stop-and-recovery.md.",
+      rejection,
       context.githubToken,
     );
     return { handled: true };

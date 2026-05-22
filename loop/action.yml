@@ -86,7 +86,7 @@ inputs:
     required: false
     default: "3"
   auto-review-label:
-    description: "Label name required to run auto-review-fix loop. Empty falls back to 'auto-review-fix'."
+    description: "Label name required to run auto-review-fix loop. Empty falls back to 'auto-review-fix'. Note: the label must exist on the repository and be applied to the PR (TY-293 #2) — otherwise the workflow `if:` evaluates to false and no run is generated."
     required: false
     default: ""
   auto-review-full-auto:

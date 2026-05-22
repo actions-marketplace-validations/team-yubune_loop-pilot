@@ -222,10 +222,19 @@ export function buildTerminalNotificationBody(
       ].join("\n");
     }
     case "init_incomplete":
+      // TY-293 #3 (UX-10): align the in-process notification with the YAML
+      // fail-safe in `auto-review-init.yml` so operators see the same three
+      // concrete recovery steps regardless of which path caught the failure.
+      // The old single-line text ("Re-run Workflow A or manually post
+      // `@codex review`") was abstract enough that operators had to leave
+      // GitHub to figure out how to act on it.
       return [
-        "⚠️ **Auto-review initialization incomplete**",
+        "⚠️ **Auto-review init incomplete** — the initial `@codex review` was never posted.",
         "",
-        "Re-run Workflow A or manually post `@codex review`.",
+        "Auto-review is not active on this PR until init runs successfully. Either:",
+        "- Re-run the Workflow A run from the Actions tab, or",
+        "- Re-trigger init by removing and re-adding the gate label (or closing / reopening the PR in full-auto mode).",
+        "",
         `See the [status comment](${permalink}) for context.`,
       ].join("\n");
   }
@@ -563,12 +572,18 @@ export async function postInitIncompleteComment(
     name,
     pr,
     {
-      current: "Init incomplete",
-      nextAction: "Re-run Workflow A or manually post '@codex review'.",
+      // TY-293 #3 (UX-10): same three operator actions as the YAML fail-safe
+      // in `auto-review-init.yml` and the in-process top-level notification
+      // (`buildTerminalNotificationBody.init_incomplete`). Keeping the
+      // language identical across the three surfaces lets operators recognise
+      // the failure mode regardless of which path posted the comment.
+      current: "Init incomplete — initial `@codex review` not posted",
+      nextAction:
+        "Re-run Workflow A from the Actions tab, or remove and re-add the gate label.",
       newEntry: entry(
         "init_incomplete",
         "Auto-review initialization incomplete",
-        "Workflow A may have failed before posting the initial review request.",
+        "Workflow A may have failed before posting the initial `@codex review`. Re-run from the Actions tab, or remove and re-add the gate label (or close / reopen the PR in full-auto mode).",
       ),
     },
     token,

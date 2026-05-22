@@ -126,14 +126,19 @@ describe("buildTerminalNotificationBody (TY-259)", () => {
     expect(body).toContain(`[status comment](${permalink})`);
   });
 
-  it("renders the init_incomplete body with operator guidance", () => {
+  it("renders the init_incomplete body with the three YAML fail-safe operator actions (TY-293 #3)", () => {
     const body = buildTerminalNotificationBody(
       { kind: "init_incomplete" },
       permalink,
     );
     expect(body).toContain("⚠️");
-    expect(body).toContain("initialization incomplete");
-    expect(body).toContain("Re-run Workflow A or manually post `@codex review`");
+    expect(body).toContain("init incomplete");
+    // TY-293 #3 (UX-10): wording must match the YAML fail-safe in
+    // `auto-review-init.yml` so the in-process notification and the
+    // fail-safe present the same three concrete actions.
+    expect(body).toContain("Re-run the Workflow A run from the Actions tab");
+    expect(body).toContain("Re-trigger init by removing and re-adding the gate label");
+    expect(body).toContain("closing / reopening the PR in full-auto mode");
     expect(body).toContain(`[status comment](${permalink})`);
   });
 });
@@ -229,7 +234,9 @@ describe("terminal poster wiring (TY-259)", () => {
     expect(mockedUpsertStatusComment).toHaveBeenCalledTimes(1);
     expect(mockedGhApi).toHaveBeenCalledTimes(1);
     const { body } = expectPostCommentInvocation(mockedGhApi.mock.calls[0]);
-    expect(body).toContain("Auto-review initialization incomplete");
+    // TY-293 #3 (UX-10): post-rewrite wording is "init incomplete" (lowercase
+    // "init", matches the YAML fail-safe and the in-process notification).
+    expect(body).toContain("init incomplete");
   });
 
   it("postClaudeCodeActionFixSummary does NOT post a top-level notification (iter progress stays aggregated)", async () => {

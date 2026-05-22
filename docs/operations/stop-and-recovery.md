@@ -327,6 +327,8 @@ hard restart。soft restart の操作に加えて、`iterationCount` を `0`、`
 3. Workflow A を手動 dispatch、またはPR操作で再実行して hidden comment を再作成する
 4. PR に復旧理由・操作者を含む audit コメントを投稿する
 
+> **注意**: この経路では `/restart-review --hard` でも復旧できない。`handleRestartCommand` は state を読めない時点で early return するため `--hard` の clear ロジックに到達せず、同じ拒否文言が返るだけになる。TY-293 #1 (UX-06) で拒否コメント自体に上記手順を埋め込むよう改善した — operator が docs を開かなくても 1 コメントで完結する。
+
 **2 番目の経路 (論理的 corrupted)** は TY-282 #1C で `/restart-review --hard` での復旧が可能になった:
 
 - `applyRestartToState` (`src/restart-command.ts`) は `state.stopReason === "state_corrupted"` + `mode === "soft"` の組合せのみを reject する
