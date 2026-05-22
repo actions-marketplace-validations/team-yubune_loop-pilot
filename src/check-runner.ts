@@ -117,6 +117,18 @@ export async function runCheckCommand(
   try {
     const { stdout, stderr } = await execAsync(checkCommand, {
       timeout: 5 * 60 * 1000, // 5 minutes in milliseconds
+      // TY-299: align with `build-runner.ts` (100 MB) so verbose CHECK_COMMAND
+      // output (`tsc --pretty`, `eslint .` on a monorepo, `vitest
+      // --reporter=verbose`, `pytest -vv`, ...) does not trip Node's default
+      // 1 MB exec buffer and reject as `ENOBUFS / stdout maxBuffer length
+      // exceeded`. Without this cap, a CHECK_COMMAND that successfully
+      // returned exit 0 would be misclassified as `test_failure`, the
+      // claude-code-action repair would be discarded by `resetWorkingTree`,
+      // and `/restart-review` would loop on the same misclassification. The
+      // downstream `sanitizeOutput` → `truncateIfNeeded` already caps the
+      // surfaced text at 60,000 chars, so this larger raw buffer does not
+      // propagate into stop comments or hidden state JSON.
+      maxBuffer: 100 * 1024 * 1024,
       encoding: "utf-8",
       env: safeEnv,
     });

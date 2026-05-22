@@ -509,6 +509,10 @@ post-fix が `CHECK_COMMAND` を子プロセスとして実行する経路は、
 
 stop reason は **追加しない** — config load 時 fail なので state を書く前に死ぬ。エラーメッセージにこの節へのリンクが含まれる。
 
+### 出力バッファ上限 (TY-299)
+
+`runCheckCommand` (`src/check-runner.ts`) は `execAsync` に `maxBuffer: 100 MB` を渡す (`build-runner.ts` と同値)。Node の `child_process.exec` は `maxBuffer` 未指定時に stdout / stderr 各 **1 MB** で reject するため、`tsc --pretty` / `eslint .` (中〜大規模 monorepo) / `vitest --reporter=verbose` / `pytest -vv` 等の verbose な CHECK_COMMAND で `ENOBUFS / stdout maxBuffer length exceeded` を踏むと、CHECK 自体が exit 0 で成功していても post-fix が `test_failure` と誤判定し、claude-code-action の修正が `resetWorkingTree` で破棄される (TY-287 で `gitDiffHead` を 10 MB に引き上げたのと同じ root cause で、`runCheckCommand` のみ取り残されていた)。100 MB は build-runner と同じ予算で、下流の `sanitizeOutput → truncateIfNeeded` が 60,000 文字でさらに絞るため stop comment / 状態 JSON へは波及しない。
+
 ## Secret-scanner ポリシー (TY-274 #1)
 
 post-fix は scope check 通過後 / CHECK_COMMAND 実行前に、`git diff HEAD` の **追加行** と untracked file の内容を `src/secret-scanner.ts` の正規表現でスキャンする。scope check は **パス** policy のみで内容を検証しないため、claude-code-action が `Read` ツールで `.env` 等の secret を読み取り、`src/` 配下の許可パスに埋め込む経路を **content side で塞ぐ**目的。

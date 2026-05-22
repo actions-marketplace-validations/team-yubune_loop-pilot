@@ -191,4 +191,50 @@ describe("runCheckCommand", () => {
     const options = mockedExec.mock.calls[0]?.[1] as { timeout: number };
     expect(options.timeout).toBe(5 * 60 * 1000);
   });
+
+  it("TY-299: passes maxBuffer=100MB to the child process so verbose CHECK_COMMAND output does not trip Node's default 1MB buffer", async () => {
+    mockExecOnce({ stdout: "", stderr: "" });
+
+    await runCheckCommand("npm test");
+
+    const options = mockedExec.mock.calls[0]?.[1] as { maxBuffer: number };
+    expect(options.maxBuffer).toBe(100 * 1024 * 1024);
+  });
+
+  it("TY-299: returns success when stdout exceeds 1MB (the prior Node default that caused false test_failure stops)", async () => {
+    // Reproduces the ENOBUFS regression: prior to TY-299, exec rejected with
+    // `RangeError: stdout maxBuffer length exceeded` even though the CHECK
+    // command itself succeeded (exit 0). With the new 100 MB buffer the same
+    // 2 MB stdout must resolve as `success: true`.
+    const bigStdout = "x".repeat(2 * 1024 * 1024);
+    mockExecOnce({ stdout: bigStdout, stderr: "" });
+
+    const result = await runCheckCommand("npm test");
+
+    expect(result.success).toBe(true);
+    // Output is downsized by sanitizeOutput → truncateIfNeeded (60k cap), so
+    // it must not leak the multi-megabyte raw payload into the caller.
+    expect(result.output.length).toBeLessThanOrEqual(60_000);
+  });
+
+  it("TY-299: ENOBUFS error path remains unchanged — pathological cases still surface as success=false with the partial output captured", async () => {
+    // Even with the 100 MB buffer, a CHECK_COMMAND that legitimately produces
+    // > 100 MB of output (or any other ENOBUFS reject) must still be reported
+    // as a test failure rather than masked. The downstream behaviour
+    // (resetWorkingTree, test_failure stop) is the caller's responsibility;
+    // here we just pin that the runner reports the captured partial output +
+    // the error message exactly as before.
+    const enobufError = Object.assign(new Error("stdout maxBuffer length exceeded"), {
+      stdout: "captured partial output",
+      stderr: "",
+      code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+    });
+    mockExecOnce({ error: enobufError });
+
+    const result = await runCheckCommand("npm test");
+
+    expect(result.success).toBe(false);
+    expect(result.output).toContain("captured partial output");
+    expect(result.output).toContain("stdout maxBuffer length exceeded");
+  });
 });
