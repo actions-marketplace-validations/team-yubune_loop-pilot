@@ -33,6 +33,10 @@ export interface StabilizeReviewCommentsOptions {
   fetchComments: FetchReviewCommentsFn;
   sleep: SleepFn;
   log?: (message: string) => void;
+  // When true, run stabilization polling even if summaryMayContainFindings
+  // returns false — used when the debounce was skipped so that a false
+  // negative in the no-findings heuristic still gets a re-poll safety net.
+  forceStabilize?: boolean;
 }
 
 /**
@@ -185,15 +189,20 @@ export async function stabilizeReviewComments(
   const intervalMs = Math.max(1, options.intervalMs);
   const maxWaitMs = Math.max(intervalMs * stablePolls, options.maxWaitMs);
 
-  if (
-    !shouldStabilizeReviewComments(
-      initialComments,
-      options.botLogin,
-      options.lastReceivedAt,
-      options.triggerSummaryBody,
-      options.severityThreshold
-    )
-  ) {
+  // forceStabilize: when the caller skipped the upstream debounce based on a
+  // "no findings" summary, this stabilization run is the only safety net for
+  // late-arriving inline comments. Always enter the polling loop so a still-
+  // arriving batch isn't truncated by a non-zero initial fetch (TY-294).
+  const skip = options.forceStabilize
+    ? false
+    : !shouldStabilizeReviewComments(
+        initialComments,
+        options.botLogin,
+        options.lastReceivedAt,
+        options.triggerSummaryBody,
+        options.severityThreshold
+      );
+  if (skip) {
     return initialComments;
   }
 
@@ -211,7 +220,7 @@ export async function stabilizeReviewComments(
     `[review-collector] No Codex inline comments yet; waiting for count to stabilize (${stablePolls} polls).`
   );
 
-  while (stableCount < stablePolls && waitedMs < maxWaitMs) {
+  while (waitedMs < maxWaitMs) {
     await options.sleep(intervalMs);
     waitedMs += intervalMs;
 
@@ -234,6 +243,19 @@ export async function stabilizeReviewComments(
     }
 
     latestComments = nextComments;
+
+    if (stableCount >= stablePolls) {
+      // TY-294: when forceStabilize is on and we still see zero comments,
+      // keep polling for the full debounce window. The original (un-skipped)
+      // flow waited debounceSeconds before its first fetch, so exiting after
+      // only stablePolls * intervalMs (~30s with defaults) would conclude
+      // "no comments" sooner than the pre-change behavior and could miss a
+      // false-negative "no findings" summary whose inline comments arrive
+      // late.
+      const mustObserveFullWindow =
+        options.forceStabilize === true && lastCount === 0;
+      if (!mustObserveFullWindow) break;
+    }
   }
 
   options.log?.(
@@ -256,17 +278,111 @@ function countRelevantBotComments(
   }).length;
 }
 
-function summaryMayContainFindings(body: string, threshold: Severity): boolean {
+/**
+ * Returns `false` when `body` clearly indicates no in-scope findings
+ * (Codex no-issues summary), `true` otherwise.
+ *
+ * TY-294: exported so `main-pre-fix.ts` can short-circuit the initial 90s
+ * debounce when Codex returned a "no findings" summary — `inline` comments
+ * are guaranteed to be empty in that case, so the debounce buys nothing.
+ * The same function still drives `shouldStabilizeReviewComments` for the
+ * second-stage stabilization safeguard.
+ */
+export function summaryMayContainFindings(
+  body: string,
+  threshold: Severity,
+): boolean {
   const normalized = body.toLowerCase();
   const noFindingsPatterns = [
     /\bno\s+findings?\b/i,
     /\b0\s+findings?\b/i,
     /\bno\s+issues?\b/i,
+    // TY-294: non-"major" forms are unconditional no-findings signals.
+    // Accept both ASCII (') and typographic (’) apostrophes so the
+    // U+2019 variant Codex sometimes emits still matches.
+    /\bdidn['’]?t\s+find\s+(?:any\s+)?(?:issues?|findings?)\b/i,
+    /\bno\s+issues?\s+found\b/i,
     /指摘なし/,
     /問題なし/,
   ];
   if (noFindingsPatterns.some((pattern) => pattern.test(body))) {
-    return false;
+    // An explicit in-scope severity label in the same text overrides the
+    // no-findings phrase (e.g. "didn't find any issues ... 1 P1 finding").
+    const inScopeSeveritySignal = (["P0", "P1", "P2", "P3"] as Severity[]).some(
+      (s) =>
+        isAtLeastSeverity(s, threshold) &&
+        new RegExp(`\\b${s}\\b`, "i").test(body),
+    );
+    if (!inScopeSeveritySignal) {
+      // Strip the matched no-findings clause(s) and check whether residual
+      // language in the rest of the text suggests inline comments may still
+      // arrive (e.g. "Didn't find any issues blocking merge, but I left
+      // suggestions inline"). Without stripping, "issues" inside the matched
+      // clause would always appear as a residual signal.
+      let strippedNoFindings = body;
+      for (const p of noFindingsPatterns) {
+        strippedNoFindings = strippedNoFindings.replace(
+          new RegExp(p.source, "gi"),
+          "",
+        );
+      }
+      const hasResidualFindingsSignal =
+        /\bfindings?\b/i.test(strippedNoFindings) ||
+        /\bissues?\b/i.test(strippedNoFindings) ||
+        /\bsuggestions?\b/i.test(strippedNoFindings) ||
+        /\bcomments?\b/i.test(strippedNoFindings) ||
+        /指摘|問題|検出/.test(strippedNoFindings);
+      if (!hasResidualFindingsSignal) {
+        return false;
+      }
+      // Residual signal found — fall through to generic keyword check.
+    }
+    // Fall through to let the severity-aware logic below give the answer.
+  }
+
+  // "no major issues" patterns: Codex's standard no-findings reply. Treat as
+  // terminal no-findings when no explicit in-scope severity signal appears in
+  // the text (e.g. "Didn't find any major issues, but found 2 P3 findings"
+  // must still return true when threshold is P3).
+  // Accept both ASCII (') and typographic (’, U+2019) apostrophes — Codex
+  // summaries sometimes get auto-typographed in transit (TY-294).
+  const noMajorIssuesPatterns = [
+    /\bdidn['’]?t\s+find\s+(?:any\s+)?major\s+(?:issues?|findings?)\b/i,
+    /\bno\s+major\s+issues?\s+found\b/i,
+  ];
+  if (noMajorIssuesPatterns.some((p) => p.test(body))) {
+    const inScopeSeveritySignal = (["P0", "P1", "P2", "P3"] as Severity[]).some(
+      (s) =>
+        isAtLeastSeverity(s, threshold) &&
+        new RegExp(`\\b${s}\\b`, "i").test(body),
+    );
+    if (!inScopeSeveritySignal) {
+      // No explicit severity label — strip the negated "no major" clause itself
+      // and check whether residual findings/issues keywords indicate unlabeled
+      // findings alongside the no-major-issues phrase (e.g. "Didn't find any
+      // major issues, but found a few minor findings"). Without stripping, the
+      // "issues" word in the matched clause would always appear as a residual.
+      const stripped = body
+        .replace(/\bdidn['’]?t\s+find\s+(?:any\s+)?major\s+(?:issues?|findings?)\b/gi, "")
+        .replace(/\bno\s+major\s+issues?\s+found\b/gi, "");
+      const hasResidualFindingsSignal =
+        /\bfindings?\b/i.test(stripped) ||
+        /\bissues?\b/i.test(stripped) ||
+        /\bsuggestions?\b/i.test(stripped) ||
+        /\bcomments?\b/i.test(stripped) ||
+        /指摘|問題|検出/.test(stripped);
+      // TY-294: "no major issues" is a terminal no-findings signal at any
+      // threshold when no residual language hints at unlabeled findings or
+      // inline comments. The default threshold is P3, so omitting the
+      // threshold guard here is required for the debounce skip to take effect
+      // in the default configuration.
+      if (!hasResidualFindingsSignal) {
+        return false;
+      }
+      // Residual signal found — fall through to generic keyword check.
+    }
+    // An in-scope severity signal is present — fall through so the severity
+    // signal block below can return the authoritative answer.
   }
 
   // "No PX findings" requires threshold-aware handling: "No P3 findings" is not

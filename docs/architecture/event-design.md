@@ -233,6 +233,7 @@ Workflow B は GitHub API で取得した `.head.repo.full_name` が空または
 - **ガード条件:** `status` が `fixing` または `stopped` または `done` の場合は即スキップして終了（`fixing`: 先行 workflow と競合するため。`stopped` / `done`: 停止・完了後に Codex の遅延コメントが到着しても再起動しないため）
 - `last_processed_review_id`（trigger comment/review の ID）と比較し、同一レビューは処理しない
 - `DEBOUNCE_SECONDS` 待機（インラインコメントが全て出揃うのを待つ）
+  - **TY-294**: trigger summary 自体が「no findings 系」 (例: Codex の「Didn't find any major issues」) を示唆する場合は debounce を skip する。inline コメントが 0 件で確定しているため 90 秒待っても得るものがない。判定は `summaryMayContainFindings` (`src/review-collector.ts`) と共用。誤検知時の safety net は `shouldStabilizeReviewComments` 経路で fetch 後に再 polling される
 - GitHub API（`GET /repos/{owner}/{repo}/pulls/{number}/comments`）で PR の review comments を取得
 - `chatgpt-codex-connector[bot]` のコメントのみフィルタ
 - **取得範囲の絞り込み:** `last_codex_review_received_at` 以降に `created_at` を持つコメントのみを対象とする。過去の iteration のコメントを再処理しないため（詳細は後述「インラインコメントの取得範囲」を参照）

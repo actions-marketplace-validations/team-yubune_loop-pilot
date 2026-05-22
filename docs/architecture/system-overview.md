@@ -45,7 +45,7 @@ PR #7 / TY-11 で、同一リポジトリ PR に対する Workflow A/B の主要
 | 環境変数 | 説明 | デフォルト | PoC 値 |
 |----------|------|-----------|--------|
 | `MAX_REVIEW_ITERATIONS` | 最大往復回数 | `20` | `1` |
-| `DEBOUNCE_SECONDS` | レビュー受信後の待機時間（秒） | `90` | `90` |
+| `DEBOUNCE_SECONDS` | レビュー受信後の待機時間（秒）。trigger summary が「no findings 系」を明示した場合は TY-294 で skip される | `90` | `90` |
 | `CHECK_COMMAND` | 修正後に実行する検証コマンド | `npm run check` | `npm run check` |
 | `CODEX_BOT_LOGIN` | Codex bot のログイン名 | `chatgpt-codex-connector[bot]` | `chatgpt-codex-connector[bot]` |
 | `STABILIZE_INTERVAL_SECONDS` | セーフガードのポーリング間隔（秒） | `10` | `10` |

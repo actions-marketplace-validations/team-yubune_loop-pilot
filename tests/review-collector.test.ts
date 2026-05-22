@@ -4,6 +4,7 @@ import {
   parseReviewCommentRecord,
   shouldStabilizeReviewComments,
   stabilizeReviewComments,
+  summaryMayContainFindings,
 } from "../src/review-collector.js";
 import type { RawReviewComment } from "../src/types.js";
 
@@ -470,5 +471,243 @@ describe("stabilizeReviewComments", () => {
 
     expect(result).toEqual(initial);
     expect(fetchCount).toBe(0);
+  });
+
+  it("forceStabilize: polls even when summary signals no findings (Finding 2 safety net)", async () => {
+    const arrived = [makeComment({ id: 5, body: "P2 Late comment" })];
+    const fetches = [arrived, arrived];
+    const sleepCalls: number[] = [];
+
+    const result = await stabilizeReviewComments([], {
+      botLogin: BOT_LOGIN,
+      lastReceivedAt: null,
+      triggerSummaryBody: "Didn't find any major issues.",
+      severityThreshold: "P3",
+      intervalMs: 5,
+      stablePolls: 2,
+      maxWaitMs: 100,
+      fetchComments: async () => fetches.shift() ?? arrived,
+      sleep: async (ms) => {
+        sleepCalls.push(ms);
+      },
+      forceStabilize: true,
+    });
+
+    expect(result).toEqual(arrived);
+    expect(sleepCalls.length).toBeGreaterThan(0);
+  });
+
+  it("forceStabilize: keeps polling when initial comments already exist (Finding 2)", async () => {
+    // Codex sometimes posts the first inline comment quickly and additional
+    // findings seconds later. If the first fetch is truncated, late findings
+    // are lost. With forceStabilize on, stabilization must continue until the
+    // count actually stabilizes instead of short-circuiting on the first
+    // non-zero batch.
+    let fetchCount = 0;
+    const initial = [makeComment({ id: 1, body: "P2 First comment" })];
+    const arrived = [
+      makeComment({ id: 1, body: "P2 First comment" }),
+      makeComment({ id: 2, body: "P2 Late arriving comment" }),
+    ];
+
+    const result = await stabilizeReviewComments(initial, {
+      botLogin: BOT_LOGIN,
+      lastReceivedAt: null,
+      triggerSummaryBody: "Didn't find any major issues.",
+      severityThreshold: "P3",
+      intervalMs: 5,
+      stablePolls: 2,
+      maxWaitMs: 100,
+      fetchComments: async () => {
+        fetchCount += 1;
+        return arrived;
+      },
+      sleep: async () => {},
+      forceStabilize: true,
+    });
+
+    expect(result).toEqual(arrived);
+    expect(fetchCount).toBeGreaterThan(0);
+  });
+
+  it("forceStabilize: keeps polling for full maxWaitMs when count stays at zero (Finding 1)", async () => {
+    // The original (un-skipped) flow always waited `debounceSeconds` (90s) before
+    // fetching. The debounce-skip path replaces that with stabilization polling,
+    // so the polling must observe for at least the full debounce window before
+    // concluding no comments arrived — otherwise a false negative on the
+    // no-findings summary can mark done after only ~stablePolls * intervalMs.
+    let fetchCount = 0;
+    const sleepCalls: number[] = [];
+
+    const result = await stabilizeReviewComments([], {
+      botLogin: BOT_LOGIN,
+      lastReceivedAt: null,
+      triggerSummaryBody: "Didn't find any major issues.",
+      severityThreshold: "P3",
+      intervalMs: 5,
+      stablePolls: 2,
+      maxWaitMs: 100,
+      fetchComments: async () => {
+        fetchCount += 1;
+        return [];
+      },
+      sleep: async (ms) => {
+        sleepCalls.push(ms);
+      },
+      forceStabilize: true,
+    });
+
+    expect(result).toEqual([]);
+    // Without the Finding 1 fix, the loop would have exited after stablePolls (2)
+    // iterations at ~10ms. With the fix it polls for the full 100ms window.
+    expect(sleepCalls.length).toBe(20);
+    expect(fetchCount).toBe(20);
+  });
+});
+
+describe("summaryMayContainFindings (TY-294)", () => {
+  it("returns false for Codex's current `Didn't find any major issues` reply", () => {
+    expect(
+      summaryMayContainFindings(
+        "Codex Review: Didn't find any major issues. Another round soon, please!",
+        "P2",
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false for the contracted form without an apostrophe (`didnt find`)", () => {
+    expect(
+      summaryMayContainFindings(
+        "Codex Review: didnt find any major issues",
+        "P2",
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false for `No major issues found.` defensive variant", () => {
+    expect(
+      summaryMayContainFindings("Codex Review: No major issues found.", "P2"),
+    ).toBe(false);
+  });
+
+  it("returns true when the summary actually lists findings (regression guard)", () => {
+    expect(
+      summaryMayContainFindings(
+        "Codex Review: 3 P1 findings in src/foo.ts",
+        "P2",
+      ),
+    ).toBe(true);
+  });
+
+  it("still respects existing `no findings` / `no issues` keywords", () => {
+    expect(summaryMayContainFindings("No findings", "P2")).toBe(false);
+    expect(summaryMayContainFindings("No issues", "P2")).toBe(false);
+    expect(summaryMayContainFindings("指摘なし", "P2")).toBe(false);
+  });
+
+  it("returns true when `no major issues` but explicit in-scope P3 findings exist (threshold P3)", () => {
+    expect(
+      summaryMayContainFindings(
+        "Didn't find any major issues, but found 2 P3 findings",
+        "P3",
+      ),
+    ).toBe(true);
+  });
+
+  it("returns false when `no major issues` and P3 findings are below threshold (threshold P2)", () => {
+    expect(
+      summaryMayContainFindings(
+        "Didn't find any major issues, but found 2 P3 findings",
+        "P2",
+      ),
+    ).toBe(false);
+  });
+
+  it("returns true when `no major issues found` but explicit in-scope P3 findings exist (threshold P3)", () => {
+    expect(
+      summaryMayContainFindings(
+        "No major issues found, but there are 3 P3 findings",
+        "P3",
+      ),
+    ).toBe(true);
+  });
+
+  // Finding 1: noFindingsPatterns must check residual text for inline-comment hints
+  it("returns true when `didn't find any issues` is qualified by trailing suggestions language (Finding 1)", () => {
+    expect(
+      summaryMayContainFindings(
+        "Didn't find any issues blocking merge, but I left suggestions inline",
+        "P2",
+      ),
+    ).toBe(true);
+  });
+
+  // TY-294: "no major issues" IS a no-findings signal at the default P3
+  // threshold when there is no residual findings/comments language. The
+  // debounce skip must activate in the default configuration.
+  it("returns false for plain `Didn't find any major issues` even when threshold is P3", () => {
+    expect(
+      summaryMayContainFindings(
+        "Didn't find any major issues.",
+        "P3",
+      ),
+    ).toBe(false);
+  });
+
+  // Finding 3: residual check for noMajorIssuesPatterns must include suggestions keyword
+  it("returns true when `no major issues` is followed by suggestions language (Finding 3)", () => {
+    expect(
+      summaryMayContainFindings(
+        "Didn't find any major issues, but left a few minor suggestions below.",
+        "P2",
+      ),
+    ).toBe(true);
+  });
+
+  it("returns true when `no major issues` is followed by `comments inline` language", () => {
+    expect(
+      summaryMayContainFindings(
+        "Didn't find any major issues, but I left comments inline.",
+        "P2",
+      ),
+    ).toBe(true);
+  });
+
+  it("returns true when `no major issues` is followed by `comments inline` language at threshold P3", () => {
+    expect(
+      summaryMayContainFindings(
+        "Didn't find any major issues, but I left comments inline.",
+        "P3",
+      ),
+    ).toBe(true);
+  });
+
+  it("returns true when `didn't find any issues` is qualified by trailing `comments` language", () => {
+    expect(
+      summaryMayContainFindings(
+        "Didn't find any issues blocking merge, but I left a comment inline.",
+        "P2",
+      ),
+    ).toBe(true);
+  });
+
+  // Finding 3: typographic (U+2019) apostrophe must be recognized so the
+  // debounce skip still activates on summaries that get auto-typographed.
+  it("returns false for typographic apostrophe in `didn’t find any major issues` (Finding 3)", () => {
+    expect(
+      summaryMayContainFindings(
+        "Codex Review: Didn’t find any major issues. Another round soon, please!",
+        "P2",
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false for typographic apostrophe in `didn’t find any issues` (Finding 3)", () => {
+    expect(
+      summaryMayContainFindings(
+        "Codex Review: Didn’t find any issues",
+        "P2",
+      ),
+    ).toBe(false);
   });
 });

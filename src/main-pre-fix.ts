@@ -17,6 +17,7 @@ import {
   fetchReviewComments as defaultFetchReviewComments,
   filterAndParseComments,
   stabilizeReviewComments as defaultStabilizeReviewComments,
+  summaryMayContainFindings,
 } from "./review-collector.js";
 import { computeFindingsHash } from "./findings-hash.js";
 import { isLoop } from "./loop-detector.js";
@@ -428,8 +429,25 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
   }
 
   // ─── Debounce ─────────────────────────────────────────────────────────────
-  deps.info(`[pre-fix] Debouncing ${config.debounceSeconds}s...`);
-  await deps.sleep(config.debounceSeconds * 1000);
+  // TY-294 (UX): the initial debounce exists to give Codex time to post inline
+  // comments after the trigger summary. When the trigger summary itself
+  // already signals no findings (e.g. Codex's "Didn't find any major issues"
+  // reply), there are no inline comments to wait for, so the 90s sleep adds
+  // user-visible latency for zero benefit. The stabilization safeguard inside
+  // `stabilizeReviewComments` still re-polls inline comments before judging,
+  // so a false negative here only falls back to today's behaviour.
+  const debounceSkipped = !summaryMayContainFindings(
+    config.triggerCommentBody,
+    config.severityThreshold,
+  );
+  if (debounceSkipped) {
+    deps.info(
+      "[pre-fix] Trigger summary indicates no findings; skipping debounce.",
+    );
+  } else {
+    deps.info(`[pre-fix] Debouncing ${config.debounceSeconds}s...`);
+    await deps.sleep(config.debounceSeconds * 1000);
+  }
 
   // ─── Collect Findings ────────────────────────────────────────────────────
   deps.info("[pre-fix] Fetching review comments...");
@@ -456,6 +474,7 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
       ),
     sleep: deps.sleep,
     log: (message) => deps.info(message),
+    forceStabilize: debounceSkipped,
   });
 
   const { findings, skipped } = filterAndParseComments(

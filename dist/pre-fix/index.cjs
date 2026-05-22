@@ -20628,7 +20628,8 @@ async function stabilizeReviewComments(initialComments, options) {
   const stablePolls = Math.max(1, options.stablePolls);
   const intervalMs = Math.max(1, options.intervalMs);
   const maxWaitMs = Math.max(intervalMs * stablePolls, options.maxWaitMs);
-  if (!shouldStabilizeReviewComments(initialComments, options.botLogin, options.lastReceivedAt, options.triggerSummaryBody, options.severityThreshold)) {
+  const skip = options.forceStabilize ? false : !shouldStabilizeReviewComments(initialComments, options.botLogin, options.lastReceivedAt, options.triggerSummaryBody, options.severityThreshold);
+  if (skip) {
     return initialComments;
   }
   let latestComments = initialComments;
@@ -20636,7 +20637,7 @@ async function stabilizeReviewComments(initialComments, options) {
   let stableCount = 0;
   let waitedMs = 0;
   options.log?.(`[review-collector] No Codex inline comments yet; waiting for count to stabilize (${stablePolls} polls).`);
-  while (stableCount < stablePolls && waitedMs < maxWaitMs) {
+  while (waitedMs < maxWaitMs) {
     await options.sleep(intervalMs);
     waitedMs += intervalMs;
     const nextComments = await options.fetchComments();
@@ -20649,6 +20650,11 @@ async function stabilizeReviewComments(initialComments, options) {
       lastCount = nextCount;
     }
     latestComments = nextComments;
+    if (stableCount >= stablePolls) {
+      const mustObserveFullWindow = options.forceStabilize === true && lastCount === 0;
+      if (!mustObserveFullWindow)
+        break;
+    }
   }
   options.log?.(`[review-collector] Stabilization finished after ${waitedMs}ms with ${lastCount} Codex inline comment(s).`);
   return latestComments;
@@ -20669,11 +20675,40 @@ function summaryMayContainFindings(body, threshold) {
     /\bno\s+findings?\b/i,
     /\b0\s+findings?\b/i,
     /\bno\s+issues?\b/i,
+    // TY-294: non-"major" forms are unconditional no-findings signals.
+    // Accept both ASCII (') and typographic (’) apostrophes so the
+    // U+2019 variant Codex sometimes emits still matches.
+    /\bdidn['’]?t\s+find\s+(?:any\s+)?(?:issues?|findings?)\b/i,
+    /\bno\s+issues?\s+found\b/i,
     /指摘なし/,
     /問題なし/
   ];
   if (noFindingsPatterns.some((pattern) => pattern.test(body))) {
-    return false;
+    const inScopeSeveritySignal = ["P0", "P1", "P2", "P3"].some((s) => isAtLeastSeverity(s, threshold) && new RegExp(`\\b${s}\\b`, "i").test(body));
+    if (!inScopeSeveritySignal) {
+      let strippedNoFindings = body;
+      for (const p of noFindingsPatterns) {
+        strippedNoFindings = strippedNoFindings.replace(new RegExp(p.source, "gi"), "");
+      }
+      const hasResidualFindingsSignal = /\bfindings?\b/i.test(strippedNoFindings) || /\bissues?\b/i.test(strippedNoFindings) || /\bsuggestions?\b/i.test(strippedNoFindings) || /\bcomments?\b/i.test(strippedNoFindings) || /指摘|問題|検出/.test(strippedNoFindings);
+      if (!hasResidualFindingsSignal) {
+        return false;
+      }
+    }
+  }
+  const noMajorIssuesPatterns = [
+    /\bdidn['’]?t\s+find\s+(?:any\s+)?major\s+(?:issues?|findings?)\b/i,
+    /\bno\s+major\s+issues?\s+found\b/i
+  ];
+  if (noMajorIssuesPatterns.some((p) => p.test(body))) {
+    const inScopeSeveritySignal = ["P0", "P1", "P2", "P3"].some((s) => isAtLeastSeverity(s, threshold) && new RegExp(`\\b${s}\\b`, "i").test(body));
+    if (!inScopeSeveritySignal) {
+      const stripped = body.replace(/\bdidn['’]?t\s+find\s+(?:any\s+)?major\s+(?:issues?|findings?)\b/gi, "").replace(/\bno\s+major\s+issues?\s+found\b/gi, "");
+      const hasResidualFindingsSignal = /\bfindings?\b/i.test(stripped) || /\bissues?\b/i.test(stripped) || /\bsuggestions?\b/i.test(stripped) || /\bcomments?\b/i.test(stripped) || /指摘|問題|検出/.test(stripped);
+      if (!hasResidualFindingsSignal) {
+        return false;
+      }
+    }
   }
   const specificNoFindingsMatches = [
     ...body.matchAll(/\bno\s+(p[0-3](?:\s*\/\s*p[0-3])*)\s+findings?\b/gi)
@@ -21534,8 +21569,13 @@ async function runPreFix(config, deps = defaultDeps3) {
     await deps.postStopComment(config.repoOwner, config.repoName, config.prNumber, "codex_usage_limit", triggerCommentId, 0, "Codex replied with a usage-limit notice instead of a review. Wait for quota to reset (or upgrade), then run /restart-review.", config.githubToken, deriveIterationProgress(stoppedState, config.maxReviewIterations));
     return;
   }
-  deps.info(`[pre-fix] Debouncing ${config.debounceSeconds}s...`);
-  await deps.sleep(config.debounceSeconds * 1e3);
+  const debounceSkipped = !summaryMayContainFindings(config.triggerCommentBody, config.severityThreshold);
+  if (debounceSkipped) {
+    deps.info("[pre-fix] Trigger summary indicates no findings; skipping debounce.");
+  } else {
+    deps.info(`[pre-fix] Debouncing ${config.debounceSeconds}s...`);
+    await deps.sleep(config.debounceSeconds * 1e3);
+  }
   deps.info("[pre-fix] Fetching review comments...");
   const fetchedComments = await deps.fetchReviewComments(config.repoOwner, config.repoName, config.prNumber, config.githubToken);
   const rawComments = await deps.stabilizeReviewComments(fetchedComments, {
@@ -21548,7 +21588,8 @@ async function runPreFix(config, deps = defaultDeps3) {
     maxWaitMs: config.debounceSeconds * 1e3,
     fetchComments: () => deps.fetchReviewComments(config.repoOwner, config.repoName, config.prNumber, config.githubToken),
     sleep: deps.sleep,
-    log: (message) => deps.info(message)
+    log: (message) => deps.info(message),
+    forceStabilize: debounceSkipped
   });
   const { findings, skipped } = filterAndParseComments(rawComments, config.codexBotLogin, state.lastCodexReviewReceivedAt, config.severityThreshold);
   if (skipped.unparseable > 0) {

@@ -1076,4 +1076,63 @@ describe("runPreFix", () => {
       expect.stringContaining("not added to Bash allowlist"),
     );
   });
+
+  it("TY-294: skips the initial debounce when the trigger summary signals no findings", async () => {
+    const config: Config = {
+      ...baseConfig,
+      debounceSeconds: 90,
+      triggerCommentBody:
+        "Codex Review: Didn't find any major issues. Another round soon, please!",
+    };
+    const deps = makeDeps({
+      found: true,
+      corrupted: false,
+      commentId: 100,
+      commentUpdatedAt: "2026-05-14T11:00:00Z",
+      state: makeState({ status: "waiting_codex" }),
+    });
+
+    await runPreFix(config, deps);
+
+    // The debounce sleep is `await deps.sleep(debounceSeconds * 1000)`. With
+    // the no-findings short-circuit, that call MUST be skipped — operators
+    // were waiting 90s for a guaranteed-empty inline polling.
+    const sleepCalls = (deps.sleep as ReturnType<typeof vi.fn>).mock.calls;
+    expect(
+      sleepCalls.every((call) => call[0] !== 90 * 1000),
+    ).toBe(true);
+    expect(deps.info).toHaveBeenCalledWith(
+      "[pre-fix] Trigger summary indicates no findings; skipping debounce.",
+    );
+    // Finding 2: stabilization must still be given the chance to re-poll even
+    // when the debounce was skipped, to guard against false negatives in the
+    // no-findings heuristic.
+    expect(deps.stabilizeReviewComments).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ forceStabilize: true }),
+    );
+  });
+
+  it("TY-294: still debounces when the trigger summary contains findings (regression)", async () => {
+    const config: Config = {
+      ...baseConfig,
+      debounceSeconds: 90,
+      triggerCommentBody:
+        "Codex Review: 3 P1 findings in src/foo.ts — check error handling.",
+    };
+    const deps = makeDeps({
+      found: true,
+      corrupted: false,
+      commentId: 100,
+      commentUpdatedAt: "2026-05-14T11:00:00Z",
+      state: makeState({ status: "waiting_codex" }),
+    });
+
+    await runPreFix(config, deps);
+
+    const sleepCalls = (deps.sleep as ReturnType<typeof vi.fn>).mock.calls;
+    expect(
+      sleepCalls.some((call) => call[0] === 90 * 1000),
+    ).toBe(true);
+  });
 });
