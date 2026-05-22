@@ -326,19 +326,64 @@ function scanWithIntentToAdd(args: {
 }
 
 /**
+ * Paths whose WARN findings are suppressed from the workflow log (TY-298 #2).
+ * These locations hold high-entropy strings as a matter of normal repository
+ * hygiene — npm integrity hashes, build bundles, vitest / jest snapshots,
+ * compiled binary lockfiles — so the `high-entropy-long-string` pattern
+ * matches them aggressively and floods the log with hundreds of WARN lines
+ * per run. Hard-fail findings under the same paths are still logged via
+ * `deps.error`; only the warning-only stream is suppressed.
+ */
+export const SECRET_WARN_PATH_SUPPRESS_RE =
+  /(?:(?:^|\/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|poetry\.lock|Pipfile\.lock|composer\.lock)$|^dist\/|\.snap$|\.lockb?$)/i;
+
+/**
+ * Per-run upper bound on individually emitted WARN lines. Once exceeded,
+ * additional WARN findings are folded into the summary line so the log
+ * cannot grow unboundedly on PRs that touch many high-entropy files.
+ */
+export const SECRET_WARN_LOG_CAP = 20;
+
+/**
  * Emit `core.info` lines for warning-tier secret-scan findings.
  *
  * The matched value is never logged — pattern name + path only — so the
  * workflow log itself cannot become a secret-leak vector.
+ *
+ * TY-298 #2: WARN findings on hash-bearing paths (`SECRET_WARN_PATH_SUPPRESS_RE`)
+ * are suppressed, and the total emitted-per-stage count is capped at
+ * `SECRET_WARN_LOG_CAP`. Suppressed / capped counts are surfaced via a single
+ * summary line so the original "track record" design intent (observe WARN
+ * volume before promoting a rule to hard-fail) keeps working, but a noisy
+ * pattern like `high-entropy-long-string` cannot drown out a low-volume
+ * actionable pattern like `credential-assignment`. Hard-fail findings are
+ * logged separately by the caller via `deps.error` and are unaffected.
  */
-function logSecretScanWarnings(
+export function logSecretScanWarnings(
   result: SecretScanResult,
   stage: "pre-check" | "pre-commit",
   deps: { info: (msg: string) => void },
 ): void {
+  let logged = 0;
+  let suppressedByPath = 0;
+  let cappedOver = 0;
   for (const w of result.warnings) {
+    if (SECRET_WARN_PATH_SUPPRESS_RE.test(w.path)) {
+      suppressedByPath += 1;
+      continue;
+    }
+    if (logged >= SECRET_WARN_LOG_CAP) {
+      cappedOver += 1;
+      continue;
+    }
     deps.info(
       `[secret-scan] WARN stage=${stage} pattern=${w.pattern} path=${w.path} (warning-only; not stopping the loop)`,
+    );
+    logged += 1;
+  }
+  if (suppressedByPath > 0 || cappedOver > 0) {
+    deps.info(
+      `[secret-scan] WARN summary stage=${stage} logged=${logged} suppressed_by_path=${suppressedByPath} capped_over=${cappedOver}`,
     );
   }
 }

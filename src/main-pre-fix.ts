@@ -102,7 +102,20 @@ export interface PreFixDeps {
   now: () => Date;
   /** Reads HEAD sha. Returns "" on failure. */
   readHeadSha: () => string;
-  /** Best-effort `git checkout <ref>`. Failure is logged but non-fatal. */
+  /**
+   * `git checkout <ref>` (via `execFileSync`, `stdio: "inherit"`). Throws on
+   * non-zero exit (TY-298 #1 — corrects the prior "non-fatal" docstring that
+   * misrepresented the implementation). The throw propagates through
+   * `runPreFix` and is caught by `runIfNotVitest`'s `onError`, which calls
+   * `core.setFailed` + `demoteFixingOnCrash`. That, in turn, lets the
+   * `auto-review-loop.yml` #2B fail-safe post the top-level 🛑 notification.
+   *
+   * Must be invoked BEFORE the `fixingState` write (TY-285 #4) so a checkout
+   * failure does not consume an iteration slot or append a finding-hash
+   * entry. The corresponding invariant is fixed by
+   * `tests/main-pre-fix.test.ts` "propagates checkoutBranch failure ..." —
+   * any future stub that silently swallows the failure will break that test.
+   */
   checkoutBranch: (ref: string) => void;
 }
 

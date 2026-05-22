@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "../src/config.js";
 import {
+  logSecretScanWarnings,
   runPostFix,
+  SECRET_WARN_LOG_CAP,
   type PostFixDeps,
   type PostFixInputs,
 } from "../src/main-post-fix.js";
+import type { SecretScanFinding, SecretScanResult } from "../src/secret-scanner.js";
 import {
   StateUpdateConflictError,
   createInitialState,
@@ -1920,5 +1923,121 @@ describe("runPostFix", () => {
       "github-token",
       expect.any(Object),
     );
+  });
+});
+
+function makeWarn(path: string, pattern = "high-entropy-long-string"): SecretScanFinding {
+  return { pattern, severity: "warn", path };
+}
+
+function makeHard(path: string, pattern = "github-pat-classic"): SecretScanFinding {
+  return { pattern, severity: "hard", path };
+}
+
+describe("logSecretScanWarnings (TY-298 #2)", () => {
+  it("suppresses WARN lines for hash-bearing paths and emits a summary instead", async () => {
+    const result: SecretScanResult = {
+      hardFailures: [],
+      warnings: [
+        makeWarn("package-lock.json"),
+        makeWarn("pnpm-lock.yaml"),
+        makeWarn("yarn.lock"),
+        makeWarn("Cargo.lock"),
+        makeWarn("poetry.lock"),
+        makeWarn("Pipfile.lock"),
+        makeWarn("composer.lock"),
+        makeWarn("dist/post-fix/index.cjs"),
+        makeWarn("dist/init/index.cjs.map"),
+        makeWarn("tests/__snapshots__/foo.snap"),
+        makeWarn("client/bun.lockb"),
+        makeWarn("nested/path/package-lock.json"),
+      ],
+    };
+    const info = vi.fn();
+
+    logSecretScanWarnings(result, "pre-check", { info });
+
+    // No individual WARN line should be emitted for any of these paths.
+    const individualLines = info.mock.calls
+      .map((c) => c[0])
+      .filter((m) => m.startsWith("[secret-scan] WARN stage="));
+    expect(individualLines).toEqual([]);
+    // A single summary line must surface the suppression count.
+    const summaries = info.mock.calls
+      .map((c) => c[0])
+      .filter((m) => m.startsWith("[secret-scan] WARN summary"));
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toContain("stage=pre-check");
+    expect(summaries[0]).toContain("logged=0");
+    expect(summaries[0]).toContain("suppressed_by_path=12");
+    expect(summaries[0]).toContain("capped_over=0");
+  });
+
+  it("caps the per-stage log volume at SECRET_WARN_LOG_CAP and folds the rest into the summary", async () => {
+    const warnings: SecretScanFinding[] = Array.from(
+      { length: SECRET_WARN_LOG_CAP + 10 },
+      (_, i) => makeWarn(`src/file-${i}.ts`),
+    );
+    const info = vi.fn();
+
+    logSecretScanWarnings({ hardFailures: [], warnings }, "pre-commit", { info });
+
+    const individualLines = info.mock.calls
+      .map((c) => c[0])
+      .filter((m) => m.startsWith("[secret-scan] WARN stage="));
+    expect(individualLines).toHaveLength(SECRET_WARN_LOG_CAP);
+    // Each individual line carries the per-finding stage / path / pattern.
+    expect(individualLines[0]).toContain("path=src/file-0.ts");
+    expect(individualLines[SECRET_WARN_LOG_CAP - 1]).toContain(
+      `path=src/file-${SECRET_WARN_LOG_CAP - 1}.ts`,
+    );
+
+    const summaries = info.mock.calls
+      .map((c) => c[0])
+      .filter((m) => m.startsWith("[secret-scan] WARN summary"));
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toContain("stage=pre-commit");
+    expect(summaries[0]).toContain(`logged=${SECRET_WARN_LOG_CAP}`);
+    expect(summaries[0]).toContain("suppressed_by_path=0");
+    expect(summaries[0]).toContain("capped_over=10");
+  });
+
+  it("ignores hard-fail findings — they are logged by the caller via deps.error and must not surface as WARN lines", async () => {
+    // The function intentionally consumes only `result.warnings`. Putting hard
+    // findings in the same struct should not cause them to leak into the
+    // warning log stream — the caller already prints them via `deps.error`.
+    const result: SecretScanResult = {
+      hardFailures: [
+        makeHard("src/leak.ts"),
+        makeHard("src/another-leak.ts"),
+      ],
+      warnings: [],
+    };
+    const info = vi.fn();
+
+    logSecretScanWarnings(result, "pre-check", { info });
+
+    // No WARN line, no summary line (nothing to summarize when both counters
+    // are zero) — the log is entirely silent.
+    expect(info).not.toHaveBeenCalled();
+  });
+
+  it("does not emit a summary line when every WARN was logged and nothing was suppressed", async () => {
+    const result: SecretScanResult = {
+      hardFailures: [],
+      warnings: [makeWarn("src/foo.ts"), makeWarn("src/bar.ts")],
+    };
+    const info = vi.fn();
+
+    logSecretScanWarnings(result, "pre-check", { info });
+
+    expect(info).toHaveBeenCalledTimes(2);
+    expect(info.mock.calls[0][0]).toContain("path=src/foo.ts");
+    expect(info.mock.calls[1][0]).toContain("path=src/bar.ts");
+    // No summary noise on the common no-suppression path.
+    const summaries = info.mock.calls
+      .map((c) => c[0])
+      .filter((m) => m.startsWith("[secret-scan] WARN summary"));
+    expect(summaries).toEqual([]);
   });
 });

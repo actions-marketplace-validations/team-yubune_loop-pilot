@@ -411,6 +411,9 @@ describe("runPreFix", () => {
     expect(deps.mergeIfChecksPass).not.toHaveBeenCalled();
   });
 
+  // Also pins the TY-298 #1 docstring invariant: `checkoutBranch` must throw
+  // on non-zero exit (the docstring no longer claims it is "non-fatal"). A
+  // future stub that silently swallows the failure would break this test.
   it("propagates checkoutBranch failure so claude-code-action does not run on the wrong ref", async () => {
     const findings: RawReviewComment[] = [
       {

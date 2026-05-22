@@ -18636,7 +18636,10 @@ var require_undici = __commonJS({
 // dist/main-post-fix.js
 var main_post_fix_exports = {};
 __export(main_post_fix_exports, {
+  SECRET_WARN_LOG_CAP: () => SECRET_WARN_LOG_CAP,
+  SECRET_WARN_PATH_SUPPRESS_RE: () => SECRET_WARN_PATH_SUPPRESS_RE,
   formatScopeViolationDetail: () => formatScopeViolationDetail,
+  logSecretScanWarnings: () => logSecretScanWarnings,
   runPostFix: () => runPostFix
 });
 module.exports = __toCommonJS(main_post_fix_exports);
@@ -21096,9 +21099,26 @@ function scanWithIntentToAdd(args) {
     }
   }
 }
+var SECRET_WARN_PATH_SUPPRESS_RE = /(?:(?:^|\/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|poetry\.lock|Pipfile\.lock|composer\.lock)$|^dist\/|\.snap$|\.lockb?$)/i;
+var SECRET_WARN_LOG_CAP = 20;
 function logSecretScanWarnings(result, stage, deps) {
+  let logged = 0;
+  let suppressedByPath = 0;
+  let cappedOver = 0;
   for (const w of result.warnings) {
+    if (SECRET_WARN_PATH_SUPPRESS_RE.test(w.path)) {
+      suppressedByPath += 1;
+      continue;
+    }
+    if (logged >= SECRET_WARN_LOG_CAP) {
+      cappedOver += 1;
+      continue;
+    }
     deps.info(`[secret-scan] WARN stage=${stage} pattern=${w.pattern} path=${w.path} (warning-only; not stopping the loop)`);
+    logged += 1;
+  }
+  if (suppressedByPath > 0 || cappedOver > 0) {
+    deps.info(`[secret-scan] WARN summary stage=${stage} logged=${logged} suppressed_by_path=${suppressedByPath} capped_over=${cappedOver}`);
   }
 }
 function formatScopeViolationDetail(violation, maxFiles, maxLines) {
@@ -21736,7 +21756,10 @@ async function run() {
 runIfNotVitest(run, () => demoteFixingOnCrash("post-fix"));
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  SECRET_WARN_LOG_CAP,
+  SECRET_WARN_PATH_SUPPRESS_RE,
   formatScopeViolationDetail,
+  logSecretScanWarnings,
   runPostFix
 });
 /*! Bundled license information:
