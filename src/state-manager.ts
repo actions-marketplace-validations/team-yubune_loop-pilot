@@ -21,7 +21,14 @@ const STATE_MARKER = "auto-review-state";
 const STATE_COMMENT_OPEN = "<!-- " + STATE_MARKER;
 const STATE_COMMENT_CLOSE = "-->";
 const STATE_COMMENT_VISIBLE_TEXT = "Auto-review state is stored in this comment.";
-const MAX_HISTORY_ENTRIES = 3;
+// TY-296: keep the per-write history cap aligned with the default
+// `MAX_REVIEW_ITERATIONS` (config.ts → 20) so `isLoop` can detect oscillations
+// whose cycle length exceeds 3. With the old cap of 3, an A→B→C→D→A pattern
+// trimmed the original A out of history before it could re-match and burned
+// every iteration at the base tier until `max_iterations`. 1 entry is ~70
+// bytes; 20 entries fit comfortably under MAX_SERIALIZED_BYTES (65,000) even
+// alongside a full `previousCheckFailure` payload.
+const MAX_HISTORY_ENTRIES = 20;
 const MAX_SERIALIZED_BYTES = 65000;
 const VALID_STATUSES = new Set(["initialized", "waiting_codex", "fixing", "done", "stopped"]);
 

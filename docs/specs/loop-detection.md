@@ -60,7 +60,8 @@ def is_loop(current_findings, findings_hash_history):
 - `line` はキーに含めない（Claude の修正で行数が変動すると、同一指摘がループ検知をすり抜けるため）
 - **hidden comment に保持するのはハッシュ値のみ**。`normalized_set` は保持しない（コメントサイズ制限のため）
 - そのため、異なる workflow 実行間では**ハッシュの完全一致のみ**で判定する。部分一致（80%マッチ）の判定は `normalized_set` が必要なため、hidden comment からの復元では不可能
-- **振動パターン（A → B → A）の検知:** `findings_hash_history` に直近 N 回分（推奨: 3回）を保持し、いずれかとの一致でループ検知する（直近1回のみの比較では検知できない）
+- **振動パターン（A → B → A）の検知:** `findings_hash_history` に直近 N 回分を保持し、いずれかとの一致でループ検知する（直近1回のみの比較では検知できない）
+- **検知可能なサイクル長の上限:** N は `state-manager.ts` の `MAX_HISTORY_ENTRIES` で決まる。現状の実装では `MAX_REVIEW_ITERATIONS` の default と同じ **20** に揃えており、cycle 長 ≤ 20 の oscillation を検知できる。cycle 長 > 20 の oscillation は履歴が trim されて検知不能となり、`max_iterations` で停止する（TY-296 でこの上限を 3 → 20 に引き上げた経緯あり）
 
 ---
 

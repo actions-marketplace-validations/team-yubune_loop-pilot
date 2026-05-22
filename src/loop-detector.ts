@@ -11,6 +11,12 @@ import type { Finding, FindingsHashEntry } from "./types.js";
  *   `false` so the next iteration can retry with the escalated tier.
  * - A match against the last entry whose tier is `"escalated"` (or missing,
  *   for state predating this feature) is a real loop and reported as such.
+ *
+ * Detectable cycle length is bounded by `MAX_HISTORY_ENTRIES` in
+ * `state-manager.ts` (TY-296): a cycle of length `n` is only caught when
+ * history retains all `n` prior hashes at the moment the cycle closes.
+ * Cycles longer than the cap fall through to `max_iterations` instead of
+ * `loop_detected`.
  */
 export function isLoop(
   currentFindings: Finding[],

@@ -115,24 +115,49 @@ describe("serializeState", () => {
     expect(restored!.findingsHashHistory).toHaveLength(3);
   });
 
-  it("trims findingsHashHistory to max 3 entries on serialization", () => {
-    const longHistory: FindingsHashEntry[] = [
-      { iteration: 1, hash: "aaa" },
-      { iteration: 2, hash: "bbb" },
-      { iteration: 3, hash: "ccc" },
-      { iteration: 4, hash: "ddd" },
-      { iteration: 5, hash: "eee" },
-    ];
+  it("trims findingsHashHistory to max 20 entries on serialization (TY-296)", () => {
+    // TY-296: history cap was bumped from 3 → 20 so `isLoop` can catch
+    // oscillations of cycle length up to MAX_REVIEW_ITERATIONS' default.
+    const longHistory: FindingsHashEntry[] = Array.from({ length: 25 }, (_, i) => ({
+      iteration: i + 1,
+      hash: `h${i + 1}`,
+    }));
     const state = makeState({ findingsHashHistory: longHistory });
     const serialized = serializeState(state);
     const restored = deserializeState(serialized);
 
     expect(restored).not.toBeNull();
-    // Should keep only the most recent 3 entries
-    expect(restored!.findingsHashHistory).toHaveLength(3);
-    expect(restored!.findingsHashHistory[0].hash).toBe("ccc");
-    expect(restored!.findingsHashHistory[1].hash).toBe("ddd");
-    expect(restored!.findingsHashHistory[2].hash).toBe("eee");
+    expect(restored!.findingsHashHistory).toHaveLength(20);
+    // The most recent 20 entries should be retained (h6 .. h25).
+    expect(restored!.findingsHashHistory[0].hash).toBe("h6");
+    expect(restored!.findingsHashHistory[19].hash).toBe("h25");
+  });
+
+  it("TY-296: keeps the body under MAX_SERIALIZED_BYTES with a full 20-entry history + max-cap previousCheckFailure", () => {
+    // The history cap bump is only safe if the resulting body still fits
+    // GitHub's 65,536-char comment-body limit (MAX_SERIALIZED_BYTES guard at
+    // 65,000) alongside a full-budget previousCheckFailure (20,000 chars at
+    // write time, per PREVIOUS_CHECK_FAILURE_MAX_CHARS).
+    const fullHistory: FindingsHashEntry[] = Array.from({ length: 20 }, (_, i) => ({
+      iteration: i + 1,
+      hash: `hash-${i + 1}`.padEnd(16, "0"),
+      modelTier: i % 2 === 0 ? "base" : "escalated",
+    }));
+    const state = makeState({
+      findingsHashHistory: fullHistory,
+      previousCheckFailure: "L".repeat(20_000),
+    });
+
+    const serialized = serializeState(state);
+
+    expect(serialized.length).toBeLessThanOrEqual(65_000);
+    const restored = deserializeState(serialized);
+    expect(restored).not.toBeNull();
+    // Step 1 (history-only trim, no previousCheckFailure shrink) should be
+    // sufficient at the configured budget — guard against silent regression
+    // into the Step 2 / Step 3 fallback for the normal-operation envelope.
+    expect(restored!.findingsHashHistory).toHaveLength(20);
+    expect(restored!.previousCheckFailure).toBe("L".repeat(20_000));
   });
 
   it("TY-287 #1: re-truncates previousCheckFailure in the fallback path so an oversized blob cannot push the body over 65,000 chars", () => {

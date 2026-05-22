@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { isLoop } from "../src/loop-detector.js";
 import { computeFindingsHash } from "../src/findings-hash.js";
+import {
+  createInitialState,
+  deserializeState,
+  serializeState,
+} from "../src/state-manager.js";
 import type { Finding, FindingsHashEntry } from "../src/types.js";
 
 const baseFinding: Finding = {
@@ -116,5 +121,38 @@ describe("isLoop", () => {
     ];
 
     expect(isLoop(findings, findingsHashHistory)).toBe(true);
+  });
+
+  it("TY-296: detects an A→B→C→D→A cycle after the history has been persisted through serializeState", () => {
+    // Regression for TY-296: with MAX_HISTORY_ENTRIES=3 the original A was
+    // trimmed before the cycle closed, so `isLoop` returned false and the
+    // workflow burned every iteration at the base tier until `max_iterations`.
+    // The post-fix history must round-trip through serialize/deserialize
+    // (matching the real on-PR lifecycle) before the loop check runs.
+    const findingsA: Finding[] = [baseFinding];
+    const findingsB: Finding[] = [anotherFinding];
+    const findingsC: Finding[] = [{ ...baseFinding, path: "src/c.ts", title: "C" }];
+    const findingsD: Finding[] = [{ ...baseFinding, path: "src/d.ts", title: "D" }];
+
+    const hashA = computeFindingsHash(findingsA);
+    const hashB = computeFindingsHash(findingsB);
+    const hashC = computeFindingsHash(findingsC);
+    const hashD = computeFindingsHash(findingsD);
+
+    const persisted = serializeState({
+      ...createInitialState(),
+      findingsHashHistory: [
+        { iteration: 1, hash: hashA, modelTier: "base" },
+        { iteration: 2, hash: hashB, modelTier: "base" },
+        { iteration: 3, hash: hashC, modelTier: "base" },
+        { iteration: 4, hash: hashD, modelTier: "base" },
+      ],
+    });
+    const restored = deserializeState(persisted);
+    expect(restored).not.toBeNull();
+
+    // iter 5 sees findings A again — must be classified as a real loop now
+    // that history is no longer prematurely trimmed.
+    expect(isLoop(findingsA, restored!.findingsHashHistory)).toBe(true);
   });
 });
