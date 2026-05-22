@@ -53,6 +53,14 @@ export interface MergerDeps {
    * `--auto` queues the merge when required checks are still pending (e.g.,
    * when this workflow is itself a required status check); GitHub executes the
    * queued merge once all required checks pass.
+   *
+   * Prerequisite (TY-288): Repository Settings → General → "Allow auto-merge"
+   * must be enabled. When disabled, `gh pr merge --auto` fails immediately
+   * with "Pull request merging is not enabled for this repository" and
+   * `mergeIfChecksPass` silent-skips with a warning. The docs
+   * (`docs/operations/stop-and-recovery.md` and the README input table)
+   * surface this prerequisite so operators don't get stuck wondering why
+   * auto-merge "isn't firing" on a clean run.
    */
   mergeSquash: (
     owner: string,

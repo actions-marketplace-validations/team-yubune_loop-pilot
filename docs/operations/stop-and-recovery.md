@@ -7,9 +7,14 @@
 
 PR #7 で実測済み。Codex の `Codex Review: Didn't find any major issues.` コメントを受け、Workflow B が `done / no_findings` に更新し、完了コメントを投稿した。
 
-**オプション: `done / no_findings` 到達時の自動マージ (TY-245, TY-277 で hardened):**
+**オプション: `done / no_findings` 到達時の自動マージ (TY-245, TY-277 で hardened, TY-288 で挙動を docs と整合):**
 
-Repository variable `AUTO_REVIEW_AUTO_MERGE=true` を設定すると、`done / no_findings` への遷移直後に `mergeIfChecksPass`（`src/pr-merger.ts`）を呼び出し、HEAD commit の workflow run を自前で確認してから `gh pr merge --squash` でマージする。`gh pr merge --auto` は使わない（branch protection の有無に依存せず、CI 失敗時のバイパスを防ぐため）。
+Repository variable `AUTO_REVIEW_AUTO_MERGE=true` を設定すると、`done / no_findings` への遷移直後に `mergeIfChecksPass`（`src/pr-merger.ts`）を呼び出し、HEAD commit の workflow run を自前で確認してから `gh pr merge --auto --squash` でマージする。`--auto` を付ける理由は、auto-review-loop 自体が required status check として登録されている repo で「自分が走っている間は merge できない」状況を救済するため — GitHub にキューイングを委ねることで、自分自身の完了直後にマージが確定する。`mergeIfChecksPass` は polling で他の workflow run がすべて green を確認してから呼び出すので、`--auto` 経由でも CI 失敗時のバイパスは構造的に起きない (TY-277)。
+
+仕様の前提:
+
+- **Repository Settings → General → "Allow auto-merge" を有効化する必要がある** (`--auto` フラグはこの設定が有効でないと `gh pr merge` が「Pull request merging is not enabled for this repository」で fail する)。未有効の repo では `mergeIfChecksPass` が `core.warning` ログを残して silent に skip するため、auto-merge を運用するなら repo setup の初手で有効化する
+- それ以外は従来通り: HEAD sha の workflow run を確認 → 全 completed + failure なし → `gh pr merge` 発行
 
 動作:
 
@@ -17,7 +22,7 @@ Repository variable `AUTO_REVIEW_AUTO_MERGE=true` を設定すると、`done / n
 2. その sha に紐づく workflow runs を `GET /repos/.../actions/runs?head_sha=...` で列挙
 3. 自分自身（`GITHUB_RUN_ID` が一致する auto-review-loop run）は除外
 4. 1 つでも `failure` / `cancelled` / `timed_out` / `action_required` / `startup_failure` / `stale` conclusion があれば **マージしない** + warning
-5. すべて `completed` でかつ failure 無しなら `gh pr merge --squash --match-head-commit <verified-sha>` を即発行（GitHub 側でも sha 一致を強制してチェック後の race を防ぐ）
+5. すべて `completed` でかつ failure 無しなら `gh pr merge --auto --squash --match-head-commit <verified-sha>` を即発行（GitHub 側でも sha 一致を強制してチェック後の race を防ぐ）
 6. まだ `in_progress` / `queued` の run があれば `AUTO_REVIEW_AUTO_MERGE_POLL_SECONDS` (default 15) 間隔で polling
 7. polling 中に PR HEAD sha が変化したら（人が新 commit を push したら）**マージしない** + warning
 8. `AUTO_REVIEW_AUTO_MERGE_TIMEOUT_MINUTES` (default 10) を超過したら **マージしない** + warning

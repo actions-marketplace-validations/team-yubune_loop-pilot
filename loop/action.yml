@@ -114,7 +114,7 @@ inputs:
     required: false
     default: ""
   auto-merge-on-clean:
-    description: "Set to 'true' to auto-merge (squash) the PR when the loop terminates with done/no_findings. Default 'false' preserves manual merge. Auto-merge waits for every other workflow run on HEAD to settle, refuses to merge if any concluded as failure/cancelled/timed_out/action_required/startup_failure/stale, and bails if HEAD changes during the wait (TY-277)."
+    description: "Set to 'true' to auto-merge (squash) the PR when the loop terminates with done/no_findings. Default 'false' preserves manual merge. Auto-merge waits for every other workflow run on HEAD to settle, refuses to merge if any concluded as failure/cancelled/timed_out/action_required/startup_failure/stale, and bails if HEAD changes during the wait (TY-277). Calls `gh pr merge --auto --squash` which requires Repository Settings → General → 'Allow auto-merge' to be enabled — without it the merge call fails and mergeIfChecksPass silent-skips with a warning (TY-288)."
     required: false
     default: "false"
   auto-merge-poll-seconds:
