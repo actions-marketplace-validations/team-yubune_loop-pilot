@@ -19993,6 +19993,7 @@ async function postComment(owner, name, pr, body, token) {
 async function applyStatusUpdate2(owner, name, pr, update, token) {
   return upsertStatusComment(owner, name, pr, update, token);
 }
+var AUTO_MERGE_SKIP_DEDUP_WINDOW_MS = 90 * 1e3;
 async function postInitialStatusComment(owner, name, pr, maxIterations, token) {
   return applyStatusUpdate2(owner, name, pr, {
     current: "Initialized \u2014 waiting for first Codex review",

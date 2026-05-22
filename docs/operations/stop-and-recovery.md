@@ -13,7 +13,7 @@ Repository variable `AUTO_REVIEW_AUTO_MERGE=true` を設定すると、`done / n
 
 仕様の前提:
 
-- **Repository Settings → General → "Allow auto-merge" を有効化する必要がある** (`--auto` フラグはこの設定が有効でないと `gh pr merge` が「Pull request merging is not enabled for this repository」で fail する)。未有効の repo では `mergeIfChecksPass` が `core.warning` ログを残して silent に skip するため、auto-merge を運用するなら repo setup の初手で有効化する
+- **Repository Settings → General → "Allow auto-merge" を有効化する必要がある** (`--auto` フラグはこの設定が有効でないと `gh pr merge` が「Pull request merging is not enabled for this repository」で fail する)。未有効の repo では `mergeIfChecksPass` が `core.warning` ログ + `merge_call_failed` の PR 通知 (TY-295 で追加) を残して skip するため、auto-merge を運用するなら repo setup の初手で有効化する
 - それ以外は従来通り: HEAD sha の workflow run を確認 → 全 completed + failure なし → `gh pr merge` 発行
 
 動作:
@@ -35,8 +35,24 @@ Repository variable `AUTO_REVIEW_AUTO_MERGE=true` を設定すると、`done / n
 - デフォルト `false`（従来挙動・人手マージ維持）
 - 発火するのは `done / no_findings` のみ。`max_iterations` / `loop_detected` / `action_failure` 等の停止では絶対にマージしない
 - マージ方式は **squash 固定**
-- `gh pr merge --squash` 自体や API 呼び出しが失敗した場合（権限不足、`mergeable=false`、auto-merge 設定が repo で無効など）はワークフローは success のまま warning ログのみ。人手マージ運用は維持される
-- `done` 後に人間が新たに commit を push した場合は polling 中に HEAD 変化を検知して skip する。新 commit を再評価したい場合は `/restart-review` を使う
+- `gh pr merge --squash` 自体や API 呼び出しが失敗した場合（権限不足、`mergeable=false`、auto-merge 設定が repo で無効など）はワークフローは success のまま warning ログ + **PR コメントで skip 理由を通知** (TY-295)。人手マージ運用は維持される
+- `done` 後に人間が新たに commit を push した場合は polling 中に HEAD 変化を検知して skip し、PR コメントで `/restart-review` の手順を案内する (TY-295)
+
+#### Skip 時の PR 通知 (TY-295)
+
+`mergeIfChecksPass` が auto-merge を skip した場合、operator が Actions ログを開かずに PR から状況を把握できるように、`⏸️ **Auto-merge skipped**` で始まる top-level コメントを投稿する。Skip 理由ごとに本文が分岐する:
+
+| Skip 理由 | コメント例 (抜粋) | operator のアクション |
+| -- | -- | -- |
+| **CI 失敗** (`ci_failed`) | `⏸️ Auto-merge skipped — N CI run(s) failed:` + 失敗した run の `name (conclusion)` 一覧 | 失敗 CI を修正して push (auto-review が再走) するか、CI を fix 後に手動マージ |
+| **タイムアウト (pending)** (`timeout_pending`) | `⏸️ Auto-merge skipped — timed out after N min waiting for CI to complete.` + pending 中の run 名 | CI 完了待ち後に手動マージ、または `AUTO_REVIEW_AUTO_MERGE_TIMEOUT_MINUTES` を上げる |
+| **タイムアウト (no runs)** (`timeout_no_runs`) | `⏸️ Auto-merge skipped — timed out after N min waiting for any non-self CI run to appear.` | repo に CI が無いことを確認の上、手動マージ |
+| **HEAD 変化** (`head_changed`) | `⏸️ Auto-merge skipped — PR HEAD changed during CI wait` + 旧/新 sha | `/restart-review` で最新 HEAD に対して auto-review を再起動 |
+| **HEAD 空** (`head_empty`) | `⏸️ Auto-merge skipped — PR HEAD sha is empty` | PR 状態を手動調査 |
+| **transient error** (`transient_error`) | `⏸️ Auto-merge skipped — transient error: <detail>` | workflow re-run、または CI が green なら手動マージ |
+| **マージ呼び出し失敗** (`merge_call_failed`) | `⏸️ Auto-merge skipped — gh pr merge was rejected: <detail>` | Repository Settings → "Allow auto-merge" が無効になっていないか確認 (上記前提) — 必要なら有効化して再 push、または手動マージ |
+
+通知は **直近 90 秒以内に同じ prefix で始まるコメントがあれば抑制** される (TY-282 #2B と同じ dedup pattern)。dedup API が失敗した場合は fall-open (通知を出す) し、safety-net 性質を保つ。通知の post 自体に失敗しても `core.warning` を出すだけで skip 判定そのものには影響しない (best-effort)。
 
 関連 Repository variable / action input:
 

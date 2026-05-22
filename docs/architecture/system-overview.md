@@ -55,7 +55,7 @@ PR #7 / TY-11 で、同一リポジトリ PR に対する Workflow A/B の主要
 | `AUTO_REVIEW_PUSH_TOKEN` | repair commit の `git push` 専用 token。required checks を修復コミット上で発火させたい本番 repo では machine user PAT または GitHub App token を設定する。未設定時は従来通り `GITHUB_TOKEN` 相当の push 経路を使う | なし | 未設定 |
 | `AUTO_REVIEW_LABEL` | 起動ラベル名（カスタマイズ用）。デフォルトのラベル必須モードでこのラベルが付いた PR のみ Workflow A/B が起動する。未設定/空文字なら `auto-review-fix` をフォールバック使用（レビュー＋自動修正までを行うため命名は `auto-review-fix`） | `auto-review-fix` | 未設定（フォールバックで `auto-review-fix` を要求） |
 | `AUTO_REVIEW_FULL_AUTO` | `true` を設定すると label gate を無効化し、すべての非 fork ready PR で起動する（完全自動化、PoC 互換挙動） | `false`（ラベル必須） | 未設定（ラベル必須） |
-| `AUTO_REVIEW_AUTO_MERGE` | `true` を設定すると `done / no_findings` 到達時に GitHub native auto-merge (squash) を有効化する（TY-245）。他の停止理由ではマージしない。失敗時は warning のみで人手マージ運用を維持 | `false`（人手マージ） | 未設定（人手マージ） |
+| `AUTO_REVIEW_AUTO_MERGE` | `true` を設定すると `done / no_findings` 到達時に GitHub native auto-merge (squash) を有効化する（TY-245）。他の停止理由ではマージしない。skip 時は warning ログに加えて **PR コメントで理由と次のアクションを通知** する (TY-295) — 詳細は [stop-and-recovery.md](../operations/stop-and-recovery.md#skip-時の-pr-通知-ty-295) | `false`（人手マージ） | 未設定（人手マージ） |
 | `AUTO_REVIEW_SEVERITY_THRESHOLD` | auto-fix 対象とする最低 severity。値は `P0` / `P1` / `P2` / `P3` のいずれか。デフォルト `P3` は P0/P1/P2/P3 すべてを修正対象に含む。`P2` で従来挙動 (P0/P1/P2 を修正、P3 は skip)、`P1` / `P0` でさらに対象を狭める。Codex finding の severity badge が読めなかった場合は warning ログを出して件数を記録、threshold 未達 finding は info ログで件数を記録する（TY-256） | `P3` | 未設定（`P3`） |
 
 > 運用注意: `AUTO_REVIEW_FULL_AUTO=true` 時はラベルの付け外しで開始/停止を制御できない。停止したい場合は `AUTO_REVIEW_FULL_AUTO=false` に戻すか、workflow を無効化する。

@@ -1,10 +1,13 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import type { AutoMergeSkipKind } from "./comment-poster.js";
 import { ghApi } from "./gh.js";
 
 export interface MergerLogger {
   info: (message: string) => void;
   warning: (message: string) => void;
 }
+
+export type { AutoMergeSkipKind } from "./comment-poster.js";
 
 /**
  * Workflow run subset that `mergeIfChecksPass` cares about. Mirrors the
@@ -57,10 +60,11 @@ export interface MergerDeps {
    * Prerequisite (TY-288): Repository Settings → General → "Allow auto-merge"
    * must be enabled. When disabled, `gh pr merge --auto` fails immediately
    * with "Pull request merging is not enabled for this repository" and
-   * `mergeIfChecksPass` silent-skips with a warning. The docs
-   * (`docs/operations/stop-and-recovery.md` and the README input table)
-   * surface this prerequisite so operators don't get stuck wondering why
-   * auto-merge "isn't firing" on a clean run.
+   * `mergeIfChecksPass` skips with a warning + a `merge_call_failed` PR
+   * notification (TY-295) so operators see the prerequisite directly on
+   * the PR. The docs (`docs/operations/stop-and-recovery.md` and the
+   * README input table) surface this so operators don't get stuck
+   * wondering why auto-merge "isn't firing" on a clean run.
    */
   mergeSquash: (
     owner: string,
@@ -99,6 +103,19 @@ export interface MergerDeps {
   pollIntervalMs: number;
   /** Hard budget for the entire wait. Skip + warn after this elapses. */
   timeoutMs: number;
+  /**
+   * Best-effort PR notification for skip events (TY-295). When absent
+   * (e.g. unit tests not exercising the notification path), the eleven
+   * skip paths in `mergeIfChecksPass` stay warning-only. Production
+   * wiring in `main-pre-fix.ts` passes a binding of
+   * `postAutoMergeSkipNotification` so operators can see why auto-merge
+   * did not happen directly from the PR instead of digging through
+   * Actions logs. The hook is awaited but failures must not propagate —
+   * the production implementation swallows errors internally and emits
+   * `core.warning` so the skip decision itself is never blocked by a
+   * notification problem.
+   */
+  postSkipNotification?: (kind: AutoMergeSkipKind) => Promise<void>;
 }
 
 /**
@@ -260,12 +277,17 @@ export async function mergeIfChecksPass(
   try {
     initialHeadSha = await deps.getPrHeadSha(owner, name, pr, token);
   } catch (err) {
+    await deps.postSkipNotification?.({
+      kind: "transient_error",
+      detail: `failed to read PR HEAD sha (${errMessage(err)})`,
+    });
     log.warning(
       `[pr-merger] Skipping auto-merge for PR #${pr}: failed to read PR HEAD sha (${errMessage(err)}).`,
     );
     return;
   }
   if (initialHeadSha === "") {
+    await deps.postSkipNotification?.({ kind: "head_empty" });
     log.warning(
       `[pr-merger] Skipping auto-merge for PR #${pr}: empty HEAD sha.`,
     );
@@ -287,12 +309,21 @@ export async function mergeIfChecksPass(
       try {
         currentSha = await deps.getPrHeadSha(owner, name, pr, token);
       } catch (err) {
+        await deps.postSkipNotification?.({
+          kind: "transient_error",
+          detail: `failed to re-read PR HEAD during polling (${errMessage(err)})`,
+        });
         log.warning(
           `[pr-merger] Skipping auto-merge for PR #${pr}: failed to re-read PR HEAD during polling (${errMessage(err)}).`,
         );
         return;
       }
       if (currentSha !== initialHeadSha) {
+        await deps.postSkipNotification?.({
+          kind: "head_changed",
+          oldSha: initialHeadSha,
+          newSha: currentSha,
+        });
         log.warning(
           `[pr-merger] Skipping auto-merge for PR #${pr}: PR HEAD changed during CI wait (${initialHeadSha} → ${currentSha}). The new commit needs its own review/CI cycle; re-trigger via /restart-review.`,
         );
@@ -304,6 +335,10 @@ export async function mergeIfChecksPass(
     try {
       runs = await deps.listWorkflowRuns(owner, name, initialHeadSha, token);
     } catch (err) {
+      await deps.postSkipNotification?.({
+        kind: "transient_error",
+        detail: `failed to list workflow runs (${errMessage(err)})`,
+      });
       log.warning(
         `[pr-merger] Skipping auto-merge for PR #${pr}: failed to list workflow runs (${errMessage(err)}).`,
       );
@@ -330,6 +365,10 @@ export async function mergeIfChecksPass(
           mergeShaLookupNull = true;
         }
       } catch (err) {
+        await deps.postSkipNotification?.({
+          kind: "transient_error",
+          detail: `failed to read PR merge commit sha (${errMessage(err)})`,
+        });
         log.warning(
           `[pr-merger] Skipping auto-merge for PR #${pr}: failed to read PR merge commit sha (${errMessage(err)}).`,
         );
@@ -344,6 +383,10 @@ export async function mergeIfChecksPass(
       try {
         mergeRuns = await deps.listWorkflowRuns(owner, name, mergeSha, token);
       } catch (err) {
+        await deps.postSkipNotification?.({
+          kind: "transient_error",
+          detail: `failed to list workflow runs (${errMessage(err)})`,
+        });
         log.warning(
           `[pr-merger] Skipping auto-merge for PR #${pr}: failed to list workflow runs (${errMessage(err)}).`,
         );
@@ -419,6 +462,13 @@ export async function mergeIfChecksPass(
       const names = failed
         .map((r) => `${r.name} (${r.conclusion})`)
         .join(", ");
+      await deps.postSkipNotification?.({
+        kind: "ci_failed",
+        failures: failed.map((r) => ({
+          name: r.name,
+          conclusion: r.conclusion ?? "unknown",
+        })),
+      });
       log.warning(
         `[pr-merger] Skipping auto-merge for PR #${pr}: ${failed.length} CI run(s) failed: ${names}.`,
       );
@@ -435,14 +485,24 @@ export async function mergeIfChecksPass(
     // configured" and merge unconditionally.
     const elapsedMs = deps.now() - startedAt;
     if (elapsedMs >= deps.timeoutMs) {
+      const timeoutMinutes = Math.round(deps.timeoutMs / 60000);
       if (others.length === 0) {
+        await deps.postSkipNotification?.({
+          kind: "timeout_no_runs",
+          timeoutMinutes,
+        });
         log.warning(
-          `[pr-merger] Skipping auto-merge for PR #${pr}: timed out after ${Math.round(deps.timeoutMs / 60000)} min waiting for non-self CI runs to appear.`,
+          `[pr-merger] Skipping auto-merge for PR #${pr}: timed out after ${timeoutMinutes} min waiting for non-self CI runs to appear.`,
         );
       } else {
-        const pendingNames = pending.map((r) => r.name).join(", ");
+        const pendingNames = pending.map((r) => r.name);
+        await deps.postSkipNotification?.({
+          kind: "timeout_pending",
+          timeoutMinutes,
+          pending: pendingNames,
+        });
         log.warning(
-          `[pr-merger] Skipping auto-merge for PR #${pr}: timed out after ${Math.round(deps.timeoutMs / 60000)} min with ${pending.length} CI run(s) still pending: ${pendingNames}.`,
+          `[pr-merger] Skipping auto-merge for PR #${pr}: timed out after ${timeoutMinutes} min with ${pending.length} CI run(s) still pending: ${pendingNames.join(", ")}.`,
         );
       }
       return;
@@ -455,6 +515,10 @@ export async function mergeIfChecksPass(
           `[pr-merger] Auto-merge (squash) succeeded for PR #${pr} at ${initialHeadSha}.`,
         );
       } catch (err) {
+        await deps.postSkipNotification?.({
+          kind: "merge_call_failed",
+          detail: errMessage(err),
+        });
         log.warning(
           `[pr-merger] Failed to merge PR #${pr} (non-fatal): ${errMessage(err)}.`,
         );

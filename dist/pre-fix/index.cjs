@@ -20394,6 +20394,105 @@ async function postTerminalNotification(owner, name, pr, statusCommentId, kind, 
     warning(`[comment-poster] Failed to post terminal notification: ${message}`);
   }
 }
+var AUTO_MERGE_SKIP_PREFIX = "\u23F8\uFE0F **Auto-merge skipped**";
+var AUTO_MERGE_SKIP_DEDUP_WINDOW_MS = 90 * 1e3;
+function buildAutoMergeSkipBody(kind, runUrl) {
+  switch (kind.kind) {
+    case "ci_failed":
+      return [
+        `${AUTO_MERGE_SKIP_PREFIX} \u2014 ${kind.failures.length} CI run(s) failed:`,
+        "",
+        ...kind.failures.map((f) => `- \`${f.name}\` (\`${f.conclusion}\`)`),
+        "",
+        "Auto-review completed cleanly but other CI checks did not pass. Resolve the failing checks and merge manually, or push a fix to re-run.",
+        "",
+        `Workflow run: ${runUrl}`
+      ].join("\n");
+    case "timeout_pending":
+      return [
+        `${AUTO_MERGE_SKIP_PREFIX} \u2014 timed out after ${kind.timeoutMinutes} min waiting for CI to complete.`,
+        "",
+        `${kind.pending.length} CI run(s) still pending: ${kind.pending.map((n) => `\`${n}\``).join(", ")}.`,
+        "",
+        "Wait for CI to finish and merge manually, or bump `AUTO_REVIEW_AUTO_MERGE_TIMEOUT_MINUTES` if your CI is consistently slow.",
+        "",
+        `Workflow run: ${runUrl}`
+      ].join("\n");
+    case "timeout_no_runs":
+      return [
+        `${AUTO_MERGE_SKIP_PREFIX} \u2014 timed out after ${kind.timeoutMinutes} min waiting for any non-self CI run to appear.`,
+        "",
+        "Either this repository has no CI configured (in which case auto-merge will not happen at this threshold), or CI runs are queued but not visible to the GitHub API. Merge manually after confirming CI status.",
+        "",
+        `Workflow run: ${runUrl}`
+      ].join("\n");
+    case "head_changed":
+      return [
+        `${AUTO_MERGE_SKIP_PREFIX} \u2014 PR HEAD changed during CI wait (\`${kind.oldSha}\` \u2192 \`${kind.newSha}\`).`,
+        "",
+        "The new commit needs its own review/CI cycle. Use `/restart-review` to resume auto-review on the latest HEAD.",
+        "",
+        `Workflow run: ${runUrl}`
+      ].join("\n");
+    case "head_empty":
+      return [
+        `${AUTO_MERGE_SKIP_PREFIX} \u2014 PR HEAD sha is empty (PR may have been deleted or force-pushed to nothing).`,
+        "",
+        "Investigate the PR state manually.",
+        "",
+        `Workflow run: ${runUrl}`
+      ].join("\n");
+    case "transient_error":
+      return [
+        `${AUTO_MERGE_SKIP_PREFIX} \u2014 transient error: ${kind.detail}.`,
+        "",
+        "This is usually a temporary GitHub API issue. Retry by re-running the workflow, or merge manually if CI is green.",
+        "",
+        `Workflow run: ${runUrl}`
+      ].join("\n");
+    case "merge_call_failed":
+      return [
+        `${AUTO_MERGE_SKIP_PREFIX} \u2014 \`gh pr merge\` was rejected: ${kind.detail}.`,
+        "",
+        'Most common cause: Repository Settings \u2192 General \u2192 "Allow auto-merge" is disabled (TY-288). Enable it and re-run, or merge manually. Branch protection rules can also reject the merge \u2014 check the workflow run logs for the exact gh error.',
+        "",
+        `Workflow run: ${runUrl}`
+      ].join("\n");
+  }
+}
+async function recentAutoMergeSkipExists(owner, name, pr, token) {
+  try {
+    const sinceIso = new Date(Date.now() - AUTO_MERGE_SKIP_DEDUP_WINDOW_MS).toISOString();
+    const stdout = await ghApi([
+      "api",
+      `repos/${owner}/${name}/issues/${pr}/comments?since=${encodeURIComponent(sinceIso)}&per_page=30`,
+      "--jq",
+      ".[].body"
+    ], token);
+    for (const line of stdout.split("\n")) {
+      if (line.startsWith(AUTO_MERGE_SKIP_PREFIX))
+        return true;
+    }
+    return false;
+  } catch (error2) {
+    const message = error2 instanceof Error ? error2.message : String(error2);
+    warning(`[comment-poster] Auto-merge skip dedup query failed (fall-open): ${message}`);
+    return false;
+  }
+}
+async function postAutoMergeSkipNotification(owner, name, pr, kind, runUrl, token) {
+  try {
+    if (await recentAutoMergeSkipExists(owner, name, pr, token)) {
+      info(`[comment-poster] Suppressing duplicate auto-merge skip notification for PR #${pr} (within ${AUTO_MERGE_SKIP_DEDUP_WINDOW_MS / 1e3}s window).`);
+      return;
+    }
+    const body = buildAutoMergeSkipBody(kind, runUrl);
+    await postComment(owner, name, pr, body, token);
+  } catch (error2) {
+    const message = error2 instanceof Error ? error2.message : String(error2);
+    warning(`[comment-poster] Failed to post auto-merge skip notification: ${message}`);
+  }
+}
 async function postCompletionComment(owner, name, pr, iterations, token, options) {
   const autoMergeOnClean = options?.autoMergeOnClean ?? false;
   const nextAction = autoMergeOnClean ? "Auto-merge will be attempted \u2014 the PR will squash-merge once all other CI checks pass; merge manually if it does not." : "Review the changes and merge manually.";
@@ -20853,10 +20952,15 @@ async function mergeIfChecksPass(owner, name, pr, token, log, overrides = {}) {
   try {
     initialHeadSha = await deps.getPrHeadSha(owner, name, pr, token);
   } catch (err) {
+    await deps.postSkipNotification?.({
+      kind: "transient_error",
+      detail: `failed to read PR HEAD sha (${errMessage(err)})`
+    });
     log.warning(`[pr-merger] Skipping auto-merge for PR #${pr}: failed to read PR HEAD sha (${errMessage(err)}).`);
     return;
   }
   if (initialHeadSha === "") {
+    await deps.postSkipNotification?.({ kind: "head_empty" });
     log.warning(`[pr-merger] Skipping auto-merge for PR #${pr}: empty HEAD sha.`);
     return;
   }
@@ -20869,10 +20973,19 @@ async function mergeIfChecksPass(owner, name, pr, token, log, overrides = {}) {
       try {
         currentSha = await deps.getPrHeadSha(owner, name, pr, token);
       } catch (err) {
+        await deps.postSkipNotification?.({
+          kind: "transient_error",
+          detail: `failed to re-read PR HEAD during polling (${errMessage(err)})`
+        });
         log.warning(`[pr-merger] Skipping auto-merge for PR #${pr}: failed to re-read PR HEAD during polling (${errMessage(err)}).`);
         return;
       }
       if (currentSha !== initialHeadSha) {
+        await deps.postSkipNotification?.({
+          kind: "head_changed",
+          oldSha: initialHeadSha,
+          newSha: currentSha
+        });
         log.warning(`[pr-merger] Skipping auto-merge for PR #${pr}: PR HEAD changed during CI wait (${initialHeadSha} \u2192 ${currentSha}). The new commit needs its own review/CI cycle; re-trigger via /restart-review.`);
         return;
       }
@@ -20881,6 +20994,10 @@ async function mergeIfChecksPass(owner, name, pr, token, log, overrides = {}) {
     try {
       runs = await deps.listWorkflowRuns(owner, name, initialHeadSha, token);
     } catch (err) {
+      await deps.postSkipNotification?.({
+        kind: "transient_error",
+        detail: `failed to list workflow runs (${errMessage(err)})`
+      });
       log.warning(`[pr-merger] Skipping auto-merge for PR #${pr}: failed to list workflow runs (${errMessage(err)}).`);
       return;
     }
@@ -20895,6 +21012,10 @@ async function mergeIfChecksPass(owner, name, pr, token, log, overrides = {}) {
           mergeShaLookupNull = true;
         }
       } catch (err) {
+        await deps.postSkipNotification?.({
+          kind: "transient_error",
+          detail: `failed to read PR merge commit sha (${errMessage(err)})`
+        });
         log.warning(`[pr-merger] Skipping auto-merge for PR #${pr}: failed to read PR merge commit sha (${errMessage(err)}).`);
         return;
       }
@@ -20905,6 +21026,10 @@ async function mergeIfChecksPass(owner, name, pr, token, log, overrides = {}) {
       try {
         mergeRuns = await deps.listWorkflowRuns(owner, name, mergeSha, token);
       } catch (err) {
+        await deps.postSkipNotification?.({
+          kind: "transient_error",
+          detail: `failed to list workflow runs (${errMessage(err)})`
+        });
         log.warning(`[pr-merger] Skipping auto-merge for PR #${pr}: failed to list workflow runs (${errMessage(err)}).`);
         return;
       }
@@ -20932,17 +21057,34 @@ async function mergeIfChecksPass(owner, name, pr, token, log, overrides = {}) {
     const failed = deduped.filter((r) => r.conclusion !== null && FAILED_CONCLUSIONS.has(r.conclusion));
     if (failed.length > 0) {
       const names = failed.map((r) => `${r.name} (${r.conclusion})`).join(", ");
+      await deps.postSkipNotification?.({
+        kind: "ci_failed",
+        failures: failed.map((r) => ({
+          name: r.name,
+          conclusion: r.conclusion ?? "unknown"
+        }))
+      });
       log.warning(`[pr-merger] Skipping auto-merge for PR #${pr}: ${failed.length} CI run(s) failed: ${names}.`);
       return;
     }
     const pending = deduped.filter((r) => r.status !== "completed");
     const elapsedMs = deps.now() - startedAt;
     if (elapsedMs >= deps.timeoutMs) {
+      const timeoutMinutes = Math.round(deps.timeoutMs / 6e4);
       if (others.length === 0) {
-        log.warning(`[pr-merger] Skipping auto-merge for PR #${pr}: timed out after ${Math.round(deps.timeoutMs / 6e4)} min waiting for non-self CI runs to appear.`);
+        await deps.postSkipNotification?.({
+          kind: "timeout_no_runs",
+          timeoutMinutes
+        });
+        log.warning(`[pr-merger] Skipping auto-merge for PR #${pr}: timed out after ${timeoutMinutes} min waiting for non-self CI runs to appear.`);
       } else {
-        const pendingNames = pending.map((r) => r.name).join(", ");
-        log.warning(`[pr-merger] Skipping auto-merge for PR #${pr}: timed out after ${Math.round(deps.timeoutMs / 6e4)} min with ${pending.length} CI run(s) still pending: ${pendingNames}.`);
+        const pendingNames = pending.map((r) => r.name);
+        await deps.postSkipNotification?.({
+          kind: "timeout_pending",
+          timeoutMinutes,
+          pending: pendingNames
+        });
+        log.warning(`[pr-merger] Skipping auto-merge for PR #${pr}: timed out after ${timeoutMinutes} min with ${pending.length} CI run(s) still pending: ${pendingNames.join(", ")}.`);
       }
       return;
     }
@@ -20951,6 +21093,10 @@ async function mergeIfChecksPass(owner, name, pr, token, log, overrides = {}) {
         await deps.mergeSquash(owner, name, pr, initialHeadSha, token);
         log.info(`[pr-merger] Auto-merge (squash) succeeded for PR #${pr} at ${initialHeadSha}.`);
       } catch (err) {
+        await deps.postSkipNotification?.({
+          kind: "merge_call_failed",
+          detail: errMessage(err)
+        });
         log.warning(`[pr-merger] Failed to merge PR #${pr} (non-fatal): ${errMessage(err)}.`);
       }
       return;
@@ -21424,6 +21570,7 @@ var defaultDeps3 = {
   postFixingStartComment,
   postStopComment,
   postInitIncompleteComment,
+  postAutoMergeSkipNotification,
   mergeIfChecksPass,
   fetchPrLabels,
   handleRestartCommand,
@@ -21619,9 +21766,13 @@ async function runPreFix(config, deps = defaultDeps3) {
       progress: deriveIterationProgress(doneState, config.maxReviewIterations)
     });
     if (config.autoMergeOnClean) {
+      const serverUrl = process.env.GITHUB_SERVER_URL || "https://github.com";
+      const runId = process.env.GITHUB_RUN_ID || "";
+      const runUrl = runId !== "" ? `${serverUrl}/${config.repoOwner}/${config.repoName}/actions/runs/${runId}` : `${serverUrl}/${config.repoOwner}/${config.repoName}/actions`;
       await deps.mergeIfChecksPass(config.repoOwner, config.repoName, config.prNumber, config.githubToken, { info: deps.info, warning: deps.warning }, {
         pollIntervalMs: config.autoMergePollSeconds * 1e3,
-        timeoutMs: config.autoMergeTimeoutMinutes * 60 * 1e3
+        timeoutMs: config.autoMergeTimeoutMinutes * 60 * 1e3,
+        postSkipNotification: (kind) => deps.postAutoMergeSkipNotification(config.repoOwner, config.repoName, config.prNumber, kind, runUrl, config.githubToken)
       });
     }
     return;

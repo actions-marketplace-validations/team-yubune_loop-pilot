@@ -271,6 +271,190 @@ export async function postTerminalNotification(
 }
 
 /**
+ * Reasons `mergeIfChecksPass` (TY-295) declines to auto-merge a PR after
+ * `done / no_findings`. Each variant carries the fields needed to render an
+ * operator-facing PR comment that explains *why* auto-merge was skipped and
+ * *what to do next* — without forcing the operator to dig into the Actions
+ * run logs.
+ *
+ * The eleven skip paths in `mergeIfChecksPass` map onto these seven kinds:
+ *   - `transient_error`     — getPrHeadSha (initial / re-read), listWorkflowRuns (×2),
+ *                             getPrMergeSha failures
+ *   - `head_empty`          — initial HEAD sha read returned empty
+ *   - `head_changed`        — PR was force-pushed or had a new commit pushed during the CI wait
+ *   - `ci_failed`           — one or more non-self CI runs ended with a failed conclusion
+ *   - `timeout_no_runs`     — the wait budget elapsed before any non-self CI run appeared
+ *   - `timeout_pending`     — the wait budget elapsed with CI runs still pending
+ *   - `merge_call_failed`   — `gh pr merge --auto --squash` itself was rejected (commonly because
+ *                             Repository Settings → "Allow auto-merge" is disabled — see TY-288)
+ */
+export type AutoMergeSkipKind =
+  | { kind: "transient_error"; detail: string }
+  | { kind: "head_empty" }
+  | { kind: "head_changed"; oldSha: string; newSha: string }
+  | { kind: "ci_failed"; failures: ReadonlyArray<{ name: string; conclusion: string }> }
+  | { kind: "timeout_no_runs"; timeoutMinutes: number }
+  | { kind: "timeout_pending"; timeoutMinutes: number; pending: ReadonlyArray<string> }
+  | { kind: "merge_call_failed"; detail: string };
+
+/**
+ * Marker prefix used by every auto-merge skip notification. Operators can
+ * grep for it, and the dedup query in `recentAutoMergeSkipExists` uses the
+ * same prefix to recognise its own past output.
+ */
+export const AUTO_MERGE_SKIP_PREFIX = "⏸️ **Auto-merge skipped**";
+
+/**
+ * TY-295 / TY-282 #2B: dedup window for the auto-merge skip notification.
+ * A second invocation within this window suppresses the post; on API
+ * failure we fall open so a missed dedup is better than a missed signal.
+ */
+const AUTO_MERGE_SKIP_DEDUP_WINDOW_MS = 90 * 1000;
+
+/**
+ * Render the markdown body for an auto-merge skip notification. Exported
+ * for tests; production code goes through `postAutoMergeSkipNotification`.
+ */
+export function buildAutoMergeSkipBody(
+  kind: AutoMergeSkipKind,
+  runUrl: string,
+): string {
+  switch (kind.kind) {
+    case "ci_failed":
+      return [
+        `${AUTO_MERGE_SKIP_PREFIX} — ${kind.failures.length} CI run(s) failed:`,
+        "",
+        ...kind.failures.map((f) => `- \`${f.name}\` (\`${f.conclusion}\`)`),
+        "",
+        "Auto-review completed cleanly but other CI checks did not pass. Resolve the failing checks and merge manually, or push a fix to re-run.",
+        "",
+        `Workflow run: ${runUrl}`,
+      ].join("\n");
+    case "timeout_pending":
+      return [
+        `${AUTO_MERGE_SKIP_PREFIX} — timed out after ${kind.timeoutMinutes} min waiting for CI to complete.`,
+        "",
+        `${kind.pending.length} CI run(s) still pending: ${kind.pending.map((n) => `\`${n}\``).join(", ")}.`,
+        "",
+        "Wait for CI to finish and merge manually, or bump `AUTO_REVIEW_AUTO_MERGE_TIMEOUT_MINUTES` if your CI is consistently slow.",
+        "",
+        `Workflow run: ${runUrl}`,
+      ].join("\n");
+    case "timeout_no_runs":
+      return [
+        `${AUTO_MERGE_SKIP_PREFIX} — timed out after ${kind.timeoutMinutes} min waiting for any non-self CI run to appear.`,
+        "",
+        "Either this repository has no CI configured (in which case auto-merge will not happen at this threshold), or CI runs are queued but not visible to the GitHub API. Merge manually after confirming CI status.",
+        "",
+        `Workflow run: ${runUrl}`,
+      ].join("\n");
+    case "head_changed":
+      return [
+        `${AUTO_MERGE_SKIP_PREFIX} — PR HEAD changed during CI wait (\`${kind.oldSha}\` → \`${kind.newSha}\`).`,
+        "",
+        "The new commit needs its own review/CI cycle. Use `/restart-review` to resume auto-review on the latest HEAD.",
+        "",
+        `Workflow run: ${runUrl}`,
+      ].join("\n");
+    case "head_empty":
+      return [
+        `${AUTO_MERGE_SKIP_PREFIX} — PR HEAD sha is empty (PR may have been deleted or force-pushed to nothing).`,
+        "",
+        "Investigate the PR state manually.",
+        "",
+        `Workflow run: ${runUrl}`,
+      ].join("\n");
+    case "transient_error":
+      return [
+        `${AUTO_MERGE_SKIP_PREFIX} — transient error: ${kind.detail}.`,
+        "",
+        "This is usually a temporary GitHub API issue. Retry by re-running the workflow, or merge manually if CI is green.",
+        "",
+        `Workflow run: ${runUrl}`,
+      ].join("\n");
+    case "merge_call_failed":
+      return [
+        `${AUTO_MERGE_SKIP_PREFIX} — \`gh pr merge\` was rejected: ${kind.detail}.`,
+        "",
+        "Most common cause: Repository Settings → General → \"Allow auto-merge\" is disabled (TY-288). Enable it and re-run, or merge manually. Branch protection rules can also reject the merge — check the workflow run logs for the exact gh error.",
+        "",
+        `Workflow run: ${runUrl}`,
+      ].join("\n");
+  }
+}
+
+/**
+ * Best-effort dedup check (TY-282 #2B pattern). Returns true if any
+ * `${AUTO_MERGE_SKIP_PREFIX}` comment exists on the PR within the last
+ * `AUTO_MERGE_SKIP_DEDUP_WINDOW_MS`. On API failure returns false
+ * (fall-open) so a transient error doesn't permanently suppress
+ * notifications.
+ */
+async function recentAutoMergeSkipExists(
+  owner: string,
+  name: string,
+  pr: number,
+  token: string,
+): Promise<boolean> {
+  try {
+    const sinceIso = new Date(
+      Date.now() - AUTO_MERGE_SKIP_DEDUP_WINDOW_MS,
+    ).toISOString();
+    const stdout = await ghApi(
+      [
+        "api",
+        `repos/${owner}/${name}/issues/${pr}/comments?since=${encodeURIComponent(sinceIso)}&per_page=30`,
+        "--jq",
+        ".[].body",
+      ],
+      token,
+    );
+    for (const line of stdout.split("\n")) {
+      if (line.startsWith(AUTO_MERGE_SKIP_PREFIX)) return true;
+    }
+    return false;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    core.warning(
+      `[comment-poster] Auto-merge skip dedup query failed (fall-open): ${message}`,
+    );
+    return false;
+  }
+}
+
+/**
+ * Post a top-level PR comment explaining why `mergeIfChecksPass` declined
+ * to auto-merge. Best-effort: on dedup hit (recent identical-prefix
+ * comment within 90s) or post failure, the function returns without
+ * throwing so the merger's existing skip-with-warning behavior is
+ * preserved (TY-295).
+ */
+export async function postAutoMergeSkipNotification(
+  owner: string,
+  name: string,
+  pr: number,
+  kind: AutoMergeSkipKind,
+  runUrl: string,
+  token: string,
+): Promise<void> {
+  try {
+    if (await recentAutoMergeSkipExists(owner, name, pr, token)) {
+      core.info(
+        `[comment-poster] Suppressing duplicate auto-merge skip notification for PR #${pr} (within ${AUTO_MERGE_SKIP_DEDUP_WINDOW_MS / 1000}s window).`,
+      );
+      return;
+    }
+    const body = buildAutoMergeSkipBody(kind, runUrl);
+    await postComment(owner, name, pr, body, token);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    core.warning(
+      `[comment-poster] Failed to post auto-merge skip notification: ${message}`,
+    );
+  }
+}
+
+/**
  * Records a successful claude-code-action repair iteration in the PR's
  * auto-review status comment (creating it if missing). Returns the status
  * comment's ID.

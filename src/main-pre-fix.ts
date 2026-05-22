@@ -23,6 +23,7 @@ import { computeFindingsHash } from "./findings-hash.js";
 import { isLoop } from "./loop-detector.js";
 import {
   deriveIterationProgress,
+  postAutoMergeSkipNotification as defaultPostAutoMergeSkipNotification,
   postCompletionComment as defaultPostCompletionComment,
   postFixingStartComment as defaultPostFixingStartComment,
   postStopComment as defaultPostStopComment,
@@ -87,6 +88,8 @@ export interface PreFixDeps {
   postFixingStartComment: typeof defaultPostFixingStartComment;
   postStopComment: typeof defaultPostStopComment;
   postInitIncompleteComment: typeof defaultPostInitIncompleteComment;
+  /** TY-295: top-level PR notification when `mergeIfChecksPass` skips. */
+  postAutoMergeSkipNotification: typeof defaultPostAutoMergeSkipNotification;
   mergeIfChecksPass: typeof defaultMergeIfChecksPass;
   fetchPrLabels: typeof defaultFetchPrLabels;
   handleRestartCommand: typeof defaultHandleRestartCommand;
@@ -112,6 +115,7 @@ const defaultDeps: PreFixDeps = {
   postFixingStartComment: defaultPostFixingStartComment,
   postStopComment: defaultPostStopComment,
   postInitIncompleteComment: defaultPostInitIncompleteComment,
+  postAutoMergeSkipNotification: defaultPostAutoMergeSkipNotification,
   mergeIfChecksPass: defaultMergeIfChecksPass,
   fetchPrLabels: defaultFetchPrLabels,
   handleRestartCommand: defaultHandleRestartCommand,
@@ -542,6 +546,17 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
       },
     );
     if (config.autoMergeOnClean) {
+      // TY-295: build the run URL from GitHub Actions env so the skip
+      // notification can link back to the workflow run that decided to skip.
+      // Both vars are populated by the GitHub Actions runtime; we fall back
+      // to a reasonable default when running outside Actions (tests inject
+      // their own postAutoMergeSkipNotification so this fallback is harmless).
+      const serverUrl = process.env.GITHUB_SERVER_URL || "https://github.com";
+      const runId = process.env.GITHUB_RUN_ID || "";
+      const runUrl =
+        runId !== ""
+          ? `${serverUrl}/${config.repoOwner}/${config.repoName}/actions/runs/${runId}`
+          : `${serverUrl}/${config.repoOwner}/${config.repoName}/actions`;
       await deps.mergeIfChecksPass(
         config.repoOwner,
         config.repoName,
@@ -551,6 +566,15 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
         {
           pollIntervalMs: config.autoMergePollSeconds * 1000,
           timeoutMs: config.autoMergeTimeoutMinutes * 60 * 1000,
+          postSkipNotification: (kind) =>
+            deps.postAutoMergeSkipNotification(
+              config.repoOwner,
+              config.repoName,
+              config.prNumber,
+              kind,
+              runUrl,
+              config.githubToken,
+            ),
         },
       );
     }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   mergeIfChecksPass,
+  type AutoMergeSkipKind,
   type MergerDeps,
   type WorkflowRunSummary,
 } from "../src/pr-merger.js";
@@ -756,5 +757,334 @@ describe("mergeIfChecksPass — workflow-name self-exclusion fallback (Finding 3
     // loopRun should be excluded (it's ours); ciRun is green → merge proceeds.
     expect(fake.mergeCalls).toBe(1);
     expect(calls.find((c) => c.level === "warning")).toBeUndefined();
+  });
+});
+
+// TY-295: every skip path in `mergeIfChecksPass` (eleven in total) must
+// invoke `postSkipNotification` with a kind that uniquely identifies the
+// reason. The acceptance criteria require operator notification on each
+// skip; these tests pin the wiring so future refactors of the merger can't
+// drop a path silently.
+describe("mergeIfChecksPass — postSkipNotification on every skip path (TY-295)", () => {
+  function captureNotifications(): {
+    notifications: AutoMergeSkipKind[];
+    postSkipNotification: (kind: AutoMergeSkipKind) => Promise<void>;
+  } {
+    const notifications: AutoMergeSkipKind[] = [];
+    return {
+      notifications,
+      postSkipNotification: async (kind) => {
+        notifications.push(kind);
+      },
+    };
+  }
+
+  it("path 1 — transient_error when initial getPrHeadSha throws", async () => {
+    const { notifications, postSkipNotification } = captureNotifications();
+    const { log } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      getPrHeadSha: async () => {
+        throw new Error("rate-limit");
+      },
+      listWorkflowRuns: async () => [],
+      mergeSquash: async () => {},
+      sleep: async () => {},
+      now: () => 0,
+      selfRunId: "",
+      selfWorkflowName: "",
+      selfWorkflowPath: "",
+      pollIntervalMs: 100,
+      timeoutMs: 1000,
+      postSkipNotification,
+    });
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({
+      kind: "transient_error",
+    });
+    const detail = (notifications[0] as { detail: string }).detail;
+    expect(detail).toContain("failed to read PR HEAD sha");
+    expect(detail).toContain("rate-limit");
+  });
+
+  it("path 2 — head_empty when initial HEAD sha is the empty string", async () => {
+    const { notifications, postSkipNotification } = captureNotifications();
+    const { log } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      getPrHeadSha: async () => "",
+      listWorkflowRuns: async () => [],
+      mergeSquash: async () => {},
+      sleep: async () => {},
+      now: () => 0,
+      selfRunId: "",
+      selfWorkflowName: "",
+      selfWorkflowPath: "",
+      pollIntervalMs: 100,
+      timeoutMs: 1000,
+      postSkipNotification,
+    });
+
+    expect(notifications).toEqual([{ kind: "head_empty" }]);
+  });
+
+  it("path 3 — transient_error when getPrHeadSha throws during polling re-read", async () => {
+    // First call (initial read) succeeds; second call (re-read on poll #2) throws.
+    let call = 0;
+    const { notifications, postSkipNotification } = captureNotifications();
+    const { log } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      getPrHeadSha: async () => {
+        call += 1;
+        if (call === 1) return "abc123";
+        throw new Error("rate-limit");
+      },
+      // Omit getPrMergeSha so the default (which calls `gh`) doesn't fire.
+      getPrMergeSha: undefined,
+      listWorkflowRuns: async () => [run(1, "ci", "in_progress", null)],
+      mergeSquash: async () => {},
+      sleep: async () => {},
+      now: () => 0,
+      selfRunId: "",
+      selfWorkflowName: "",
+      selfWorkflowPath: "",
+      pollIntervalMs: 100,
+      timeoutMs: 10_000,
+      postSkipNotification,
+    });
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({ kind: "transient_error" });
+    const detail = (notifications[0] as { detail: string }).detail;
+    expect(detail).toContain("failed to re-read PR HEAD during polling");
+  });
+
+  it("path 4 — head_changed when PR HEAD sha differs on re-read", async () => {
+    let call = 0;
+    const { notifications, postSkipNotification } = captureNotifications();
+    const { log } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      getPrHeadSha: async () => {
+        call += 1;
+        return call === 1 ? "abc123" : "def456";
+      },
+      getPrMergeSha: undefined,
+      listWorkflowRuns: async () => [run(1, "ci", "in_progress", null)],
+      mergeSquash: async () => {},
+      sleep: async () => {},
+      now: () => 0,
+      selfRunId: "",
+      selfWorkflowName: "",
+      selfWorkflowPath: "",
+      pollIntervalMs: 100,
+      timeoutMs: 10_000,
+      postSkipNotification,
+    });
+
+    expect(notifications).toEqual([
+      { kind: "head_changed", oldSha: "abc123", newSha: "def456" },
+    ]);
+  });
+
+  it("path 5 — transient_error when listWorkflowRuns (head sha) throws", async () => {
+    const { notifications, postSkipNotification } = captureNotifications();
+    const { log } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      getPrHeadSha: async () => "abc123",
+      listWorkflowRuns: async () => {
+        throw new Error("rate-limit");
+      },
+      mergeSquash: async () => {},
+      sleep: async () => {},
+      now: () => 0,
+      selfRunId: "",
+      selfWorkflowName: "",
+      selfWorkflowPath: "",
+      pollIntervalMs: 100,
+      timeoutMs: 1000,
+      postSkipNotification,
+    });
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({ kind: "transient_error" });
+    const detail = (notifications[0] as { detail: string }).detail;
+    expect(detail).toContain("failed to list workflow runs");
+  });
+
+  it("path 6 — transient_error when getPrMergeSha throws", async () => {
+    const { notifications, postSkipNotification } = captureNotifications();
+    const { log } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      getPrHeadSha: async () => "abc123",
+      getPrMergeSha: async () => {
+        throw new Error("rate-limit");
+      },
+      listWorkflowRuns: async () => [run(1, "ci", "completed", "success")],
+      mergeSquash: async () => {},
+      sleep: async () => {},
+      now: () => 0,
+      selfRunId: "",
+      selfWorkflowName: "",
+      selfWorkflowPath: "",
+      pollIntervalMs: 100,
+      timeoutMs: 1000,
+      postSkipNotification,
+    });
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({ kind: "transient_error" });
+    const detail = (notifications[0] as { detail: string }).detail;
+    expect(detail).toContain("failed to read PR merge commit sha");
+  });
+
+  it("path 7 — transient_error when listWorkflowRuns (merge sha) throws", async () => {
+    // First listWorkflowRuns call (head sha) succeeds; second call (merge
+    // sha) throws.
+    let listCalls = 0;
+    const { notifications, postSkipNotification } = captureNotifications();
+    const { log } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      getPrHeadSha: async () => "abc123",
+      getPrMergeSha: async () => "merge456",
+      listWorkflowRuns: async () => {
+        listCalls += 1;
+        if (listCalls === 1) return [run(1, "ci", "completed", "success")];
+        throw new Error("rate-limit");
+      },
+      mergeSquash: async () => {},
+      sleep: async () => {},
+      now: () => 0,
+      selfRunId: "",
+      selfWorkflowName: "",
+      selfWorkflowPath: "",
+      pollIntervalMs: 100,
+      timeoutMs: 1000,
+      postSkipNotification,
+    });
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({ kind: "transient_error" });
+    const detail = (notifications[0] as { detail: string }).detail;
+    expect(detail).toContain("failed to list workflow runs");
+  });
+
+  it("path 8 — ci_failed carries every failed run's name and conclusion (the most important path UX-wise)", async () => {
+    const fake = makeDeps({
+      workflowRunPages: [[
+        run(1, "typecheck", "completed", "failure"),
+        run(2, "lint", "completed", "cancelled"),
+        run(3, "ci", "completed", "success"),
+      ]],
+    });
+    const { notifications, postSkipNotification } = captureNotifications();
+    const { log } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      ...fake.deps,
+      postSkipNotification,
+    });
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({ kind: "ci_failed" });
+    const failures = (notifications[0] as {
+      failures: ReadonlyArray<{ name: string; conclusion: string }>;
+    }).failures;
+    expect(failures).toEqual([
+      { name: "typecheck", conclusion: "failure" },
+      { name: "lint", conclusion: "cancelled" },
+    ]);
+  });
+
+  it("path 9 — timeout_no_runs when wait elapses with no non-self CI runs visible", async () => {
+    // Timing mirrors the existing "no-CI shortcut after timeout" test
+    // (pollIntervalMs=40s, timeoutMs=60s, clockTickMs=40s): after two
+    // sleeps the elapsed time (80s) exceeds the timeout, so the no-CI
+    // two-poll shortcut must NOT fire and we land in the timeout branch.
+    const fake = makeDeps({
+      workflowRunPages: [[run(999, "auto-review-loop", "in_progress", null)]],
+      selfRunId: "999",
+      pollIntervalMs: 40_000,
+      timeoutMs: 60_000,
+      clockTickMs: 40_000,
+    });
+    const { notifications, postSkipNotification } = captureNotifications();
+    const { log } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      ...fake.deps,
+      postSkipNotification,
+    });
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({
+      kind: "timeout_no_runs",
+      timeoutMinutes: expect.any(Number),
+    });
+  });
+
+  it("path 10 — timeout_pending names the still-pending runs", async () => {
+    const fake = makeDeps({
+      workflowRunPages: [[
+        run(1, "slow-e2e", "in_progress", null),
+        run(2, "build", "in_progress", null),
+      ]],
+      pollIntervalMs: 100,
+      timeoutMs: 250,
+      clockTickMs: 100,
+    });
+    const { notifications, postSkipNotification } = captureNotifications();
+    const { log } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      ...fake.deps,
+      postSkipNotification,
+    });
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({ kind: "timeout_pending" });
+    const pending = (notifications[0] as { pending: ReadonlyArray<string> })
+      .pending;
+    expect(pending).toEqual(["slow-e2e", "build"]);
+  });
+
+  it("path 11 — merge_call_failed when gh pr merge itself rejects (typical: Allow auto-merge disabled)", async () => {
+    const fake = makeDeps({
+      workflowRunPages: [[run(1, "ci", "completed", "success")]],
+      mergeShouldFail: true,
+    });
+    const { notifications, postSkipNotification } = captureNotifications();
+    const { log } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      ...fake.deps,
+      postSkipNotification,
+    });
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({ kind: "merge_call_failed" });
+    const detail = (notifications[0] as { detail: string }).detail;
+    expect(detail).toContain("not mergeable");
+  });
+
+  it("does not invoke postSkipNotification on the happy path (no false-positive notifications)", async () => {
+    const fake = makeDeps({
+      workflowRunPages: [[run(1, "ci", "completed", "success")]],
+    });
+    const { notifications, postSkipNotification } = captureNotifications();
+    const { log } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      ...fake.deps,
+      postSkipNotification,
+    });
+
+    expect(fake.mergeCalls).toBe(1);
+    expect(notifications).toEqual([]);
   });
 });

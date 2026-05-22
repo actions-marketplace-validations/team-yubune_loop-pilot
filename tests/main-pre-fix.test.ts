@@ -68,6 +68,7 @@ function makeDeps(
     postFixingStartComment: vi.fn().mockResolvedValue(4),
     postStopComment: vi.fn().mockResolvedValue(2),
     postInitIncompleteComment: vi.fn().mockResolvedValue(3),
+    postAutoMergeSkipNotification: vi.fn().mockResolvedValue(undefined),
     mergeIfChecksPass: vi.fn().mockResolvedValue(undefined),
     fetchPrLabels: vi.fn().mockResolvedValue(["auto-review-fix"]),
     handleRestartCommand: vi.fn().mockResolvedValue({ handled: false }),
@@ -323,8 +324,53 @@ describe("runPreFix", () => {
       expect.objectContaining({
         pollIntervalMs: expect.any(Number),
         timeoutMs: expect.any(Number),
+        postSkipNotification: expect.any(Function),
       }),
     );
+  });
+
+  it("plumbs postAutoMergeSkipNotification through to mergeIfChecksPass via the postSkipNotification hook (TY-295)", async () => {
+    // Invoking the bound hook must call postAutoMergeSkipNotification with
+    // the PR triple, the kind, a non-empty runUrl (operator follow-up
+    // link), and the github token. This pins the wiring so a future
+    // refactor of mergeIfChecksPass cannot silently drop the notification.
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({ status: "waiting_codex" }),
+      },
+      [],
+    );
+
+    await runPreFix({ ...baseConfig, autoMergeOnClean: true }, deps);
+
+    const mergeCall = vi.mocked(deps.mergeIfChecksPass).mock.calls[0]!;
+    const overrides = mergeCall[5]!;
+    expect(overrides.postSkipNotification).toBeDefined();
+
+    await overrides.postSkipNotification!({
+      kind: "ci_failed",
+      failures: [{ name: "lint", conclusion: "failure" }],
+    });
+
+    expect(deps.postAutoMergeSkipNotification).toHaveBeenCalledTimes(1);
+    const notifyCall = vi.mocked(deps.postAutoMergeSkipNotification).mock.calls[0]!;
+    expect(notifyCall[0]).toBe("team-yubune");
+    expect(notifyCall[1]).toBe("test-auto-ai-review");
+    expect(notifyCall[2]).toBe(99);
+    expect(notifyCall[3]).toEqual({
+      kind: "ci_failed",
+      failures: [{ name: "lint", conclusion: "failure" }],
+    });
+    // runUrl must point at an Actions URL so the operator can jump straight
+    // from the PR notification to the workflow log without grepping.
+    expect(notifyCall[4]).toMatch(
+      /^https:\/\/[^/]+\/team-yubune\/test-auto-ai-review\/actions/,
+    );
+    expect(notifyCall[5]).toBe("github-token");
   });
 
   it("stops when iteration count is at the configured maximum", async () => {

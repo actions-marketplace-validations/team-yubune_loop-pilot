@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const warning = vi.fn();
+const infoLog = vi.fn();
 vi.mock("@actions/core", () => ({
   warning: (msg: string) => warning(msg),
+  info: (msg: string) => infoLog(msg),
 }));
 
 vi.mock("../src/gh.js", () => ({
@@ -16,10 +18,13 @@ vi.mock("../src/status-comment.js", () => ({
 const { ghApi } = await import("../src/gh.js");
 const { upsertStatusComment } = await import("../src/status-comment.js");
 const {
+  AUTO_MERGE_SKIP_PREFIX,
+  buildAutoMergeSkipBody,
   buildStatusCommentPermalink,
   buildTerminalNotificationBody,
   deriveIterationProgress,
   nextActionForStopReason,
+  postAutoMergeSkipNotification,
   postClaudeCodeActionFixSummary,
   postCompletionComment,
   postFixingStartComment,
@@ -54,6 +59,7 @@ function expectPostCommentInvocation(call: unknown[]): {
 
 beforeEach(() => {
   warning.mockReset();
+  infoLog.mockReset();
   mockedGhApi.mockReset();
   mockedUpsertStatusComment.mockReset();
   mockedUpsertStatusComment.mockResolvedValue(STATUS_COMMENT_ID);
@@ -600,5 +606,224 @@ describe("postFixingStartComment (TY-291 #2)", () => {
       unknown
     >;
     expect(update.openFindings).toBe(5);
+  });
+});
+
+describe("buildAutoMergeSkipBody (TY-295)", () => {
+  const RUN_URL =
+    "https://github.com/team-yubune/test-auto-ai-review/actions/runs/12345";
+
+  it("starts every body with the AUTO_MERGE_SKIP_PREFIX for operator scannability and dedup", () => {
+    // The dedup query in `recentAutoMergeSkipExists` matches on this prefix,
+    // so every kind MUST render with it as the very first characters.
+    const kinds: Array<Parameters<typeof buildAutoMergeSkipBody>[0]> = [
+      { kind: "transient_error", detail: "x" },
+      { kind: "head_empty" },
+      { kind: "head_changed", oldSha: "abc", newSha: "def" },
+      {
+        kind: "ci_failed",
+        failures: [{ name: "ci", conclusion: "failure" }],
+      },
+      { kind: "timeout_no_runs", timeoutMinutes: 10 },
+      { kind: "timeout_pending", timeoutMinutes: 10, pending: ["ci"] },
+      { kind: "merge_call_failed", detail: "x" },
+    ];
+    for (const kind of kinds) {
+      const body = buildAutoMergeSkipBody(kind, RUN_URL);
+      expect(body.startsWith(AUTO_MERGE_SKIP_PREFIX)).toBe(true);
+      expect(body).toContain(`Workflow run: ${RUN_URL}`);
+    }
+  });
+
+  it("ci_failed lists every failed run with its name and conclusion (operator decides /restart-review vs manual fix)", () => {
+    const body = buildAutoMergeSkipBody(
+      {
+        kind: "ci_failed",
+        failures: [
+          { name: "typecheck", conclusion: "failure" },
+          { name: "lint", conclusion: "cancelled" },
+        ],
+      },
+      RUN_URL,
+    );
+    expect(body).toContain("2 CI run(s) failed");
+    expect(body).toContain("`typecheck` (`failure`)");
+    expect(body).toContain("`lint` (`cancelled`)");
+    // The point of this notification: operator must know auto-review is ✅
+    // but another CI is red — the body has to spell out manual action.
+    expect(body).toContain("Resolve the failing checks");
+  });
+
+  it("timeout_pending names the pending runs and references the timeout tunable", () => {
+    const body = buildAutoMergeSkipBody(
+      {
+        kind: "timeout_pending",
+        timeoutMinutes: 10,
+        pending: ["slow-e2e", "build"],
+      },
+      RUN_URL,
+    );
+    expect(body).toContain("10 min");
+    expect(body).toContain("`slow-e2e`");
+    expect(body).toContain("`build`");
+    expect(body).toContain("AUTO_REVIEW_AUTO_MERGE_TIMEOUT_MINUTES");
+  });
+
+  it("timeout_no_runs explains the no-CI-vs-API-lag ambiguity rather than hiding it", () => {
+    const body = buildAutoMergeSkipBody(
+      { kind: "timeout_no_runs", timeoutMinutes: 10 },
+      RUN_URL,
+    );
+    expect(body).toContain("waiting for any non-self CI run to appear");
+    expect(body).toContain("no CI configured");
+  });
+
+  it("head_changed includes the old and new sha and points at /restart-review", () => {
+    const body = buildAutoMergeSkipBody(
+      { kind: "head_changed", oldSha: "abc123", newSha: "def456" },
+      RUN_URL,
+    );
+    expect(body).toContain("`abc123`");
+    expect(body).toContain("`def456`");
+    expect(body).toContain("/restart-review");
+  });
+
+  it("head_empty surfaces the deleted-or-force-pushed-to-nothing case", () => {
+    const body = buildAutoMergeSkipBody({ kind: "head_empty" }, RUN_URL);
+    expect(body).toContain("HEAD sha is empty");
+    expect(body).toContain("Investigate the PR state manually");
+  });
+
+  it("transient_error preserves the underlying error detail so the operator can grep logs", () => {
+    const body = buildAutoMergeSkipBody(
+      { kind: "transient_error", detail: "failed to read PR HEAD sha (rate-limit)" },
+      RUN_URL,
+    );
+    expect(body).toContain("transient error");
+    expect(body).toContain("failed to read PR HEAD sha (rate-limit)");
+    expect(body).toContain("temporary GitHub API issue");
+  });
+
+  it("merge_call_failed points at the most common cause (Allow auto-merge disabled per TY-288)", () => {
+    const body = buildAutoMergeSkipBody(
+      { kind: "merge_call_failed", detail: "Pull request merging is not enabled" },
+      RUN_URL,
+    );
+    expect(body).toContain("`gh pr merge` was rejected");
+    expect(body).toContain("Pull request merging is not enabled");
+    expect(body).toContain("Allow auto-merge");
+    expect(body).toContain("TY-288");
+  });
+});
+
+describe("postAutoMergeSkipNotification (TY-295)", () => {
+  const RUN_URL =
+    "https://github.com/team-yubune/test-auto-ai-review/actions/runs/12345";
+
+  it("posts when no recent skip notification exists in the dedup window", async () => {
+    // First ghApi call: dedup query returns no matching bodies.
+    // Second ghApi call: postComment returns the new comment id.
+    mockedGhApi.mockResolvedValueOnce(""); // dedup query
+    mockedGhApi.mockResolvedValueOnce(String(POSTED_COMMENT_ID)); // postComment
+
+    await postAutoMergeSkipNotification(
+      "team-yubune",
+      "test-auto-ai-review",
+      65,
+      { kind: "ci_failed", failures: [{ name: "ci", conclusion: "failure" }] },
+      RUN_URL,
+      "token",
+    );
+
+    expect(mockedGhApi).toHaveBeenCalledTimes(2);
+    const { body } = expectPostCommentInvocation(mockedGhApi.mock.calls[1]);
+    expect(body.startsWith(AUTO_MERGE_SKIP_PREFIX)).toBe(true);
+    expect(body).toContain("`ci` (`failure`)");
+  });
+
+  it("suppresses a duplicate post when a prefix-matching comment exists in the 90s dedup window", async () => {
+    // Dedup query returns a body that already starts with the prefix — the
+    // function must NOT call postComment a second time.
+    mockedGhApi.mockResolvedValueOnce(
+      `${AUTO_MERGE_SKIP_PREFIX} — earlier skip notification body`,
+    );
+
+    await postAutoMergeSkipNotification(
+      "team-yubune",
+      "test-auto-ai-review",
+      65,
+      { kind: "ci_failed", failures: [{ name: "ci", conclusion: "failure" }] },
+      RUN_URL,
+      "token",
+    );
+
+    // One call total: the dedup query. No second postComment call.
+    expect(mockedGhApi).toHaveBeenCalledTimes(1);
+    expect(warning).not.toHaveBeenCalled();
+  });
+
+  it("falls open (still posts) when the dedup query itself fails", async () => {
+    // TY-282 #2B fall-open: a flaky dedup must not permanently silence a
+    // legitimate skip notification.
+    mockedGhApi.mockRejectedValueOnce(new Error("rate-limit"));
+    mockedGhApi.mockResolvedValueOnce(String(POSTED_COMMENT_ID));
+
+    await postAutoMergeSkipNotification(
+      "team-yubune",
+      "test-auto-ai-review",
+      65,
+      { kind: "head_empty" },
+      RUN_URL,
+      "token",
+    );
+
+    expect(mockedGhApi).toHaveBeenCalledTimes(2);
+    expect(warning).toHaveBeenCalled();
+    expect(warning.mock.calls[0][0]).toContain(
+      "Auto-merge skip dedup query failed (fall-open)",
+    );
+  });
+
+  it("swallows post failures and emits a warning so the merger's skip decision is never blocked", async () => {
+    // Dedup query passes (returns empty), but the postComment call fails.
+    // The function must return normally — the production caller logs its
+    // own warning, so the merger's skip semantics stay intact.
+    mockedGhApi.mockResolvedValueOnce(""); // dedup OK
+    mockedGhApi.mockRejectedValueOnce(new Error("network down")); // post fails
+
+    await expect(
+      postAutoMergeSkipNotification(
+        "team-yubune",
+        "test-auto-ai-review",
+        65,
+        { kind: "head_empty" },
+        RUN_URL,
+        "token",
+      ),
+    ).resolves.toBeUndefined();
+
+    const failureWarning = warning.mock.calls.find((c) =>
+      String(c[0]).includes("Failed to post auto-merge skip notification"),
+    );
+    expect(failureWarning).toBeDefined();
+    expect(String(failureWarning![0])).toContain("network down");
+  });
+
+  it("queries with a `since=` filter so old skip comments outside the 90s window don't suppress a fresh post", async () => {
+    mockedGhApi.mockResolvedValueOnce("");
+    mockedGhApi.mockResolvedValueOnce(String(POSTED_COMMENT_ID));
+
+    await postAutoMergeSkipNotification(
+      "team-yubune",
+      "test-auto-ai-review",
+      65,
+      { kind: "head_empty" },
+      RUN_URL,
+      "token",
+    );
+
+    const dedupArgs = mockedGhApi.mock.calls[0]![0] as readonly string[];
+    const path = dedupArgs[1] ?? "";
+    expect(path).toContain("/comments?since=");
   });
 });

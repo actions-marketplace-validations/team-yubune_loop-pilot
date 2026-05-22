@@ -20041,6 +20041,7 @@ async function postTerminalNotification(owner, name, pr, statusCommentId, kind, 
     warning(`[comment-poster] Failed to post terminal notification: ${message}`);
   }
 }
+var AUTO_MERGE_SKIP_DEDUP_WINDOW_MS = 90 * 1e3;
 async function postClaudeCodeActionFixSummary(owner, name, pr, iteration, changedPaths, lastCommit, token, progress) {
   const fileLines = changedPaths.length > 0 ? changedPaths.map((path) => `- \`${path}\``).join("\n") : "_(no files changed)_";
   return applyStatusUpdate2(owner, name, pr, {

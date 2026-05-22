@@ -480,7 +480,7 @@ jobs:
 | `severity-threshold` | `P3` | これ未満の severity は無視 (TY-256)。デフォルト `P3` は P0/P1/P2/P3 すべてを修正対象、`P2` で従来挙動 (P3 を skip)、`P1`/`P0` でさらに狭める |
 | `scope-allowed-path-prefixes` | `src/,tests/,docs/` | scope check の allow-list (TY-266) |
 | `auto-review-hard-block-override` | "" | 特定パスを hard-block 対象から外す (TY-255) |
-| `auto-merge-on-clean` | `false` | `done / no_findings` 到達時に自動 squash merge (TY-245 / TY-277)。**前提として repo Settings → General → "Allow auto-merge" を有効化する必要がある** (TY-288)。未有効だと `gh pr merge --auto` が即 fail し、`mergeIfChecksPass` が warning ログを残して silent skip する |
+| `auto-merge-on-clean` | `false` | `done / no_findings` 到達時に自動 squash merge (TY-245 / TY-277)。**前提として repo Settings → General → "Allow auto-merge" を有効化する必要がある** (TY-288)。未有効だと `gh pr merge --auto` が即 fail し、`mergeIfChecksPass` が warning ログ + PR コメント (`⏸️ Auto-merge skipped`) で理由を通知して skip する (TY-295)。同様に CI 失敗 / HEAD 変化 / timeout / 一時的 API エラー の各 skip 経路でも PR 通知が出る — 詳細は [`docs/operations/stop-and-recovery.md`](docs/operations/stop-and-recovery.md#skip-時の-pr-通知-ty-295) |
 
 すべての input は [`loop/action.yml`](loop/action.yml) と [`init/action.yml`](init/action.yml) を参照。
 
