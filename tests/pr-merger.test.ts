@@ -475,12 +475,12 @@ describe("mergeIfChecksPass — no other runs", () => {
     expect(fake.sleepCalls.length).toBe(1);
   });
 
-  it("merges after two grace polls when no non-self CI runs ever appear", async () => {
-    // Repos that have no workflows besides the auto-review loop should be
-    // able to merge without waiting for the full timeout. A single empty poll
-    // is insufficient because CI with queue delays can still return zero runs
-    // on the first retry. After two consecutive empty poll intervals the
-    // absence of other runs is treated as "no CI configured" and auto-merge proceeds.
+  it("#C: noCiConfiguredDelayMs:0 preserves the immediate no-CI merge (TY-308)", async () => {
+    // Regression guard for the pre-TY-308 "no CI configured → merge" path.
+    // Disabling the delay (0 ms) makes the absence of non-self runs merge on
+    // the first poll, exactly as the previous pollCount-based shortcut did once
+    // its threshold was met — confirming the new gate is opt-out and otherwise
+    // behaviour-preserving.
     const fake = makeDeps({
       workflowRunPages: [[run(999, "auto-review-loop", "in_progress", null)]],
       selfRunId: "999",
@@ -488,10 +488,13 @@ describe("mergeIfChecksPass — no other runs", () => {
     });
     const { log } = captureLog();
 
-    await mergeIfChecksPass("o", "r", 42, "tok", log, fake.deps);
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      ...fake.deps,
+      noCiConfiguredDelayMs: 0,
+    });
 
     expect(fake.mergeCalls).toBe(1);
-    expect(fake.sleepCalls.length).toBe(2);
+    expect(fake.sleepCalls.length).toBe(0);
   });
 
   it("does not apply two-poll no-CI shortcut after timeout has elapsed", async () => {
@@ -511,6 +514,109 @@ describe("mergeIfChecksPass — no other runs", () => {
     await mergeIfChecksPass("o", "r", 42, "tok", log, fake.deps);
 
     expect(fake.mergeCalls).toBe(0);
+    expect(calls.find((c) => c.level === "warning")?.message).toMatch(/timed out after/);
+  });
+});
+
+describe("mergeIfChecksPass — no-CI delay (TY-308)", () => {
+  it("#A: does not merge while elapsed < noCiConfiguredDelayMs, even past two polls", async () => {
+    // Slow CI registration: no non-self run is ever visible, but the wall-clock
+    // delay (60s) has not elapsed. The previous pollCount>=2 shortcut would
+    // have merged at ~30s; the time-based gate must keep waiting (and here
+    // eventually time out) rather than merge before a required check appears.
+    const clock = { t: 0 };
+    let mergeCalls = 0;
+    const { log, calls } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      getPrHeadSha: async () => "abc123",
+      getPrMergeSha: undefined,
+      listWorkflowRuns: async () => [run(999, "auto-review-loop", "in_progress", null)],
+      mergeSquash: async () => { mergeCalls += 1; },
+      sleep: async () => { clock.t += 10_000; },
+      now: () => clock.t,
+      selfRunId: "999",
+      selfWorkflowName: "",
+      pollIntervalMs: 10_000,
+      timeoutMs: 55_000,
+      noCiConfiguredDelayMs: 60_000,
+    });
+
+    // Polls at 30s/40s/50s (pollCount > 2) all stay below the 60s delay, so no
+    // merge fires; the run ends via the timeout guard instead.
+    expect(mergeCalls).toBe(0);
+    expect(calls.find((c) => c.level === "warning")?.message).toMatch(/timed out after/);
+  });
+
+  it("#B: merges once elapsed reaches noCiConfiguredDelayMs with no non-self runs", async () => {
+    const clock = { t: 0 };
+    let mergeCalls = 0;
+    const mergeShas: string[] = [];
+    const { log } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      getPrHeadSha: async () => "abc123",
+      getPrMergeSha: undefined,
+      listWorkflowRuns: async () => [run(999, "auto-review-loop", "in_progress", null)],
+      mergeSquash: async (_o, _n, _pr, sha) => { mergeCalls += 1; mergeShas.push(sha); },
+      sleep: async () => { clock.t += 60_000; },
+      now: () => clock.t,
+      selfRunId: "999",
+      selfWorkflowName: "",
+      pollIntervalMs: 15_000,
+      timeoutMs: 600_000,
+      noCiConfiguredDelayMs: 60_000,
+    });
+
+    expect(mergeCalls).toBe(1);
+    expect(mergeShas).toEqual(["abc123"]);
+  });
+
+  it("#D: merges immediately when a completed non-self run is present, regardless of delay", async () => {
+    const clock = { t: 0 };
+    let mergeCalls = 0;
+    const { log } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      getPrHeadSha: async () => "abc123",
+      getPrMergeSha: undefined,
+      listWorkflowRuns: async () => [run(1, "ci", "completed", "success")],
+      mergeSquash: async () => { mergeCalls += 1; },
+      sleep: async () => { clock.t += 1000; },
+      now: () => clock.t,
+      selfRunId: "",
+      selfWorkflowName: "",
+      pollIntervalMs: 100,
+      timeoutMs: 600_000,
+      noCiConfiguredDelayMs: 60_000,
+    });
+
+    expect(mergeCalls).toBe(1);
+  });
+
+  it("#E: never merges while merge sha is unresolved, even after the delay elapses", async () => {
+    // mergeShaLookupNull guard (TY-277) must dominate the new delay: GitHub is
+    // still computing the merge ref, so CI that only runs on the merge ref has
+    // not appeared yet. Crossing the 60s delay must not merge.
+    const clock = { t: 0 };
+    let mergeCalls = 0;
+    const { log, calls } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      getPrHeadSha: async () => "abc123",
+      getPrMergeSha: async () => null,
+      listWorkflowRuns: async () => [],
+      mergeSquash: async () => { mergeCalls += 1; },
+      sleep: async () => { clock.t += 30_000; },
+      now: () => clock.t,
+      selfRunId: "",
+      selfWorkflowName: "",
+      pollIntervalMs: 15_000,
+      timeoutMs: 90_000,
+      noCiConfiguredDelayMs: 60_000,
+    });
+
+    expect(mergeCalls).toBe(0);
     expect(calls.find((c) => c.level === "warning")?.message).toMatch(/timed out after/);
   });
 });
@@ -621,21 +727,25 @@ describe("mergeIfChecksPass — merge sha pending (Finding 2)", () => {
     expect(mergeShaCallCount).toBeGreaterThanOrEqual(3);
   });
 
-  it("still applies two-poll shortcut when getPrMergeSha is not provided", async () => {
-    // When the dep is absent entirely (no merge-ref CI expected), the
-    // two-empty-polls shortcut must still work so repos without CI can merge.
+  it("still applies the no-CI shortcut when getPrMergeSha is not provided", async () => {
+    // When the dep is absent entirely (no merge-ref CI expected), the no-CI
+    // merge must still fire so repos without CI can merge. The TY-308 delay is
+    // disabled here (0 ms) to isolate the mergeShaLookupNull gating: with no
+    // getPrMergeSha the shortcut is not gated and merges on the first poll.
     const fake = makeDeps({
       workflowRunPages: [[run(999, "auto-review-loop", "in_progress", null)]],
       selfRunId: "999",
       pollIntervalMs: 100,
     });
-    // makeDeps sets getPrMergeSha: undefined, so the shortcut is not gated.
     const { log } = captureLog();
 
-    await mergeIfChecksPass("o", "r", 42, "tok", log, fake.deps);
+    await mergeIfChecksPass("o", "r", 42, "tok", log, {
+      ...fake.deps,
+      noCiConfiguredDelayMs: 0,
+    });
 
     expect(fake.mergeCalls).toBe(1);
-    expect(fake.sleepCalls.length).toBe(2);
+    expect(fake.sleepCalls.length).toBe(0);
   });
 });
 

@@ -104,6 +104,15 @@ export interface MergerDeps {
   /** Hard budget for the entire wait. Skip + warn after this elapses. */
   timeoutMs: number;
   /**
+   * Minimum wall-clock time that must elapse before treating
+   * `others.length === 0` as "no CI configured" and proceeding to merge.
+   * Guards against premature merges in environments where CI registration
+   * takes longer than a couple of poll intervals (self-hosted runner
+   * cold-start, large `workflow_run` provenance chains, actions/runs API
+   * replication lag). Default {@link DEFAULT_NO_CI_DELAY_MS} (60s).
+   */
+  noCiConfiguredDelayMs: number;
+  /**
    * Best-effort PR notification for skip events (TY-295). When absent
    * (e.g. unit tests not exercising the notification path), the eleven
    * skip paths in `mergeIfChecksPass` stay warning-only. Production
@@ -137,6 +146,7 @@ const FAILED_CONCLUSIONS: ReadonlySet<string> = new Set([
 
 export const DEFAULT_AUTO_MERGE_POLL_INTERVAL_MS = 15 * 1000;
 export const DEFAULT_AUTO_MERGE_TIMEOUT_MS = 10 * 60 * 1000;
+export const DEFAULT_NO_CI_DELAY_MS = 60 * 1000;
 
 function defaultMergerDeps(overrides: Partial<MergerDeps> = {}): MergerDeps {
   return {
@@ -230,6 +240,7 @@ function defaultMergerDeps(overrides: Partial<MergerDeps> = {}): MergerDeps {
     })(),
     pollIntervalMs: DEFAULT_AUTO_MERGE_POLL_INTERVAL_MS,
     timeoutMs: DEFAULT_AUTO_MERGE_TIMEOUT_MS,
+    noCiConfiguredDelayMs: DEFAULT_NO_CI_DELAY_MS,
     ...overrides,
   };
 }
@@ -477,12 +488,12 @@ export async function mergeIfChecksPass(
 
     const pending = deduped.filter((r) => r.status !== "completed");
     // P2: merge when all current runs are complete (no pending). If there are
-    // no non-self runs yet, wait two poll intervals before merging so that CI
-    // workflows that haven't been queued yet (queue delay, API lag) get a
-    // chance to appear. A single empty poll is insufficient because the first
-    // retry can still return zero runs on repos with delayed CI. After two
-    // consecutive empty polls (pollCount >= 2), treat absence as "no CI
-    // configured" and merge unconditionally.
+    // no non-self runs yet, wait at least `noCiConfiguredDelayMs` of wall-clock
+    // time before treating their absence as "no CI configured" and merging.
+    // A poll-count threshold alone (the previous `pollCount >= 2`) fires after
+    // ~2×pollIntervalMs (~30s), which is shorter than CI registration on slow
+    // self-hosted runners / large workflow_run chains / actions/runs API
+    // replication lag — risking a merge before a required check appears (TY-308).
     const elapsedMs = deps.now() - startedAt;
     if (elapsedMs >= deps.timeoutMs) {
       const timeoutMinutes = Math.round(deps.timeoutMs / 60000);
@@ -508,25 +519,29 @@ export async function mergeIfChecksPass(
       return;
     }
 
-    if (pending.length === 0 && !mergeShaLookupNull && (others.length > 0 || pollCount >= 2)) {
-      try {
-        await deps.mergeSquash(owner, name, pr, initialHeadSha, token);
-        log.info(
-          `[pr-merger] Auto-merge (squash) succeeded for PR #${pr} at ${initialHeadSha}.`,
-        );
-      } catch (err) {
-        await deps.postSkipNotification?.({
-          kind: "merge_call_failed",
-          detail: errMessage(err),
-        });
-        log.warning(
-          `[pr-merger] Failed to merge PR #${pr} (non-fatal): ${errMessage(err)}.`,
-        );
+    if (pending.length === 0 && !mergeShaLookupNull) {
+      const elapsedSufficient =
+        others.length > 0 || elapsedMs >= deps.noCiConfiguredDelayMs;
+      if (elapsedSufficient) {
+        try {
+          await deps.mergeSquash(owner, name, pr, initialHeadSha, token);
+          log.info(
+            `[pr-merger] Auto-merge (squash) succeeded for PR #${pr} at ${initialHeadSha}.`,
+          );
+        } catch (err) {
+          await deps.postSkipNotification?.({
+            kind: "merge_call_failed",
+            detail: errMessage(err),
+          });
+          log.warning(
+            `[pr-merger] Failed to merge PR #${pr} (non-fatal): ${errMessage(err)}.`,
+          );
+        }
+        return;
       }
-      return;
     }
-    // others.length === 0 and pollCount < 2: CI may not have been queued yet;
-    // fall through to sleep and retry.
+    // others.length === 0 and elapsed < noCiConfiguredDelayMs: CI may not have
+    // been queued yet; fall through to sleep and retry.
 
     pollCount += 1;
     if (others.length === 0) {

@@ -27,6 +27,7 @@ Repository variable `AUTO_REVIEW_AUTO_MERGE=true` を設定すると、`done / n
 7. polling 中に PR HEAD sha が変化したら（人が新 commit を push したら）**マージしない** + warning
 8. `AUTO_REVIEW_AUTO_MERGE_TIMEOUT_MINUTES` (default 10) を超過したら **マージしない** + warning
 9. `/repos/.../actions/runs` は `--paginate` で全ページ取得するので、100 件超の workflow run があっても page 2+ の failure を見落とさない
+10. 自分以外の workflow run が 1 件も見えない場合（= CI 未設定リポの可能性）は、**初回マージまで最低 60s 待つ**（`noCiConfiguredDelayMs`、default `DEFAULT_NO_CI_DELAY_MS`）。これは「CI 未設定」と「CI は登録予定だがまだ visible でない」を区別するための wall-clock ガードで、poll 回数だけで判定すると `2 × AUTO_REVIEW_AUTO_MERGE_POLL_SECONDS`（約 30s）で発火し、self-hosted runner の cold-start や大きい `workflow_run` provenance チェーン、`actions/runs` API のレプリケーション遅延がある環境で required check 登録前に premature merge してしまう（TY-308）。CI 登録が 60s 超かかる極端な環境では `AUTO_REVIEW_AUTO_MERGE_TIMEOUT_MINUTES` まで保留され `timeout_no_runs` で skip + 通知される。CI 登録が遅い環境向けにこの待機時間を調整する `vars.AUTO_REVIEW_AUTO_MERGE_NO_CI_DELAY_SECONDS` の exposure は今後のチケットで対応予定（現状は `MergerDeps.noCiConfiguredDelayMs` 経由で test / 内部から override 可能）。
 
 `AUTO_REVIEW_AUTO_MERGE=true` を使う場合、workflow に `actions: read` 権限が必要（API 読みのため）。未付与だと auto-merge が常に skip される（[security.md](security.md) 参照）。
 

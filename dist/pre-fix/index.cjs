@@ -20904,6 +20904,7 @@ var FAILED_CONCLUSIONS = /* @__PURE__ */ new Set([
 ]);
 var DEFAULT_AUTO_MERGE_POLL_INTERVAL_MS = 15 * 1e3;
 var DEFAULT_AUTO_MERGE_TIMEOUT_MS = 10 * 60 * 1e3;
+var DEFAULT_NO_CI_DELAY_MS = 60 * 1e3;
 function defaultMergerDeps(overrides = {}) {
   return {
     getPrHeadSha: async (owner, name, pr, token) => {
@@ -20970,6 +20971,7 @@ function defaultMergerDeps(overrides = {}) {
     })(),
     pollIntervalMs: DEFAULT_AUTO_MERGE_POLL_INTERVAL_MS,
     timeoutMs: DEFAULT_AUTO_MERGE_TIMEOUT_MS,
+    noCiConfiguredDelayMs: DEFAULT_NO_CI_DELAY_MS,
     ...overrides
   };
 }
@@ -21118,18 +21120,21 @@ async function mergeIfChecksPass(owner, name, pr, token, log, overrides = {}) {
       }
       return;
     }
-    if (pending.length === 0 && !mergeShaLookupNull && (others.length > 0 || pollCount >= 2)) {
-      try {
-        await deps.mergeSquash(owner, name, pr, initialHeadSha, token);
-        log.info(`[pr-merger] Auto-merge (squash) succeeded for PR #${pr} at ${initialHeadSha}.`);
-      } catch (err) {
-        await deps.postSkipNotification?.({
-          kind: "merge_call_failed",
-          detail: errMessage(err)
-        });
-        log.warning(`[pr-merger] Failed to merge PR #${pr} (non-fatal): ${errMessage(err)}.`);
+    if (pending.length === 0 && !mergeShaLookupNull) {
+      const elapsedSufficient = others.length > 0 || elapsedMs >= deps.noCiConfiguredDelayMs;
+      if (elapsedSufficient) {
+        try {
+          await deps.mergeSquash(owner, name, pr, initialHeadSha, token);
+          log.info(`[pr-merger] Auto-merge (squash) succeeded for PR #${pr} at ${initialHeadSha}.`);
+        } catch (err) {
+          await deps.postSkipNotification?.({
+            kind: "merge_call_failed",
+            detail: errMessage(err)
+          });
+          log.warning(`[pr-merger] Failed to merge PR #${pr} (non-fatal): ${errMessage(err)}.`);
+        }
+        return;
       }
-      return;
     }
     pollCount += 1;
     if (others.length === 0) {
