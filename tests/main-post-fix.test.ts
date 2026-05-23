@@ -115,6 +115,7 @@ function makeDeps(
     warning: vi.fn(),
     error: vi.fn(),
     setFailed: vi.fn(),
+    demoteFixingOnCrash: vi.fn().mockResolvedValue(undefined),
     gitDiffNumstat: () => "5\t2\tsrc/foo.ts\n3\t0\ttests/foo.test.ts\n",
     gitDiffHead: () => "",
     gitListUntracked: () => "",
@@ -1508,6 +1509,37 @@ describe("runPostFix", () => {
     expect(deps.commitMessages).toEqual([]);
     expect(deps.pushCalls).toEqual([]);
     expect(deps.postStopComment).not.toHaveBeenCalled();
+  });
+
+  // TY-310 #2: the `setFailed + return` exit does not throw, so
+  // `runIfNotVitest`'s onError (which calls demoteFixingOnCrash) never runs.
+  // post-fix must therefore demote a still-`fixing` hidden state itself.
+  it("TY-310 #2: demotes a stuck fixing state via demoteFixingOnCrash when hidden state is not found", async () => {
+    const deps = makeDeps({
+      found: false,
+      corrupted: false,
+      commentId: null,
+    });
+
+    await runPostFix(baseConfig, deps, baseInputs);
+
+    expect(deps.demoteFixingOnCrash).toHaveBeenCalledTimes(1);
+    expect(deps.demoteFixingOnCrash).toHaveBeenCalledWith("post-fix");
+    expect(deps.setFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("TY-310 #2: setFailed message tells the operator to verify AUTO_REVIEW_STATE_COMMENT_AUTHORS", async () => {
+    const deps = makeDeps({
+      found: false,
+      corrupted: false,
+      commentId: null,
+    });
+
+    await runPostFix(baseConfig, deps, baseInputs);
+
+    const message = (deps.setFailed as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(message).toContain("AUTO_REVIEW_STATE_COMMENT_AUTHORS");
+    expect(message).toContain("/restart-review");
   });
 
   // TY-297 #1: the post-CHECK enumeration must run on every path (not just

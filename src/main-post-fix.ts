@@ -109,6 +109,18 @@ export interface PostFixDeps {
    */
   setFailed: (message: string) => void;
   /**
+   * Demotes a hidden `status: fixing` state to `stopped/workflow_crashed`
+   * (TY-282), then best-effort posts the 🛑 notification. No-op when the state
+   * is not `fixing`. Injected (TY-310 #2) so the `!found` entry path can fire it
+   * explicitly: that path exits via `setFailed + return` rather than throwing,
+   * so `runIfNotVitest`'s `onError` — which is the only other caller — never
+   * runs. Without this call a transient `readState` failure (or a misconfigured
+   * `AUTO_REVIEW_STATE_COMMENT_AUTHORS` that makes the real comment invisible)
+   * would leave the state `fixing` until pre-fix's 30-min stale detector, during
+   * which the operator's `/restart-review` is silently skipped.
+   */
+  demoteFixingOnCrash: typeof demoteFixingOnCrash;
+  /**
    * Returns numstat output (stdout) for `git diff --numstat --no-renames HEAD`.
    *
    * `--no-renames` is mandatory: without it git emits compact rename notation
@@ -179,6 +191,7 @@ const defaultDeps: PostFixDeps = {
   warning: (message) => core.warning(message),
   error: (message) => core.error(message),
   setFailed: (message) => core.setFailed(message),
+  demoteFixingOnCrash,
   gitDiffNumstat: git.gitDiffNumstat,
   gitDiffHead: git.gitDiffHead,
   gitListUntracked: git.gitListUntracked,
@@ -547,13 +560,24 @@ export async function runPostFix(
   if (!stateResult.found) {
     // TY-297 #2: end the step in `failure` so the auto-review-loop.yml #2B
     // fail-safe posts the top-level 🛑 notification. A silent `return` would
-    // leave the workflow step in `success`, the fail-safe would not fire,
-    // and `status: fixing` would sit untouched in the hidden state until
-    // pre-fix's stale-fixing detector (30 min) eventually demoted it — the
-    // operator gets no signal in the meantime.
+    // leave the workflow step in `success` and the fail-safe would not fire.
+    //
+    // TY-310 #2: also demote a still-`fixing` hidden state here. Because this
+    // path exits via `setFailed + return` (not a throw), `runIfNotVitest`'s
+    // `onError` — the only other place demoteFixingOnCrash runs — never fires.
+    // Without this call a transient readState failure, or a misconfigured
+    // `AUTO_REVIEW_STATE_COMMENT_AUTHORS` that hides the real comment, would
+    // strand the state at `fixing` until pre-fix's 30-min stale detector, and
+    // the operator's `/restart-review` would be silently skipped by pre-fix's
+    // `status === fixing && !stale` branch in the meantime. demoteFixingOnCrash
+    // re-reads state and is a no-op unless it finds `fixing`, so a genuinely
+    // missing state is unaffected.
+    await deps.demoteFixingOnCrash("post-fix");
     deps.setFailed(
       "[post-fix] Hidden state comment is missing or corrupted at post-fix entry. " +
-        "Cannot proceed; the workflow YAML fail-safe will post a top-level notification.",
+        "Demoted hidden state to `stopped/workflow_crashed` if it was still `fixing`. " +
+        "If the state comment exists but is invisible, verify the `AUTO_REVIEW_STATE_COMMENT_AUTHORS` " +
+        "configuration, then use `/restart-review` to resume.",
     );
     return;
   }

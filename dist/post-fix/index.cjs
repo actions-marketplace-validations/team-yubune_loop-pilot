@@ -21063,6 +21063,7 @@ var defaultDeps3 = {
   warning: (message) => warning(message),
   error: (message) => error(message),
   setFailed: (message) => setFailed(message),
+  demoteFixingOnCrash,
   gitDiffNumstat,
   gitDiffHead,
   gitListUntracked,
@@ -21239,7 +21240,8 @@ async function runPostFix(config, deps = defaultDeps3, inputs = readPostFixInput
   deps.info(`[post-fix] Starting post-fix for PR #${config.prNumber}, iteration ${inputs.iteration}, action outcome: ${inputs.actionOutcome}`);
   const stateResult = await deps.readState(config.repoOwner, config.repoName, config.prNumber, config.githubToken);
   if (!stateResult.found) {
-    deps.setFailed("[post-fix] Hidden state comment is missing or corrupted at post-fix entry. Cannot proceed; the workflow YAML fail-safe will post a top-level notification.");
+    await deps.demoteFixingOnCrash("post-fix");
+    deps.setFailed("[post-fix] Hidden state comment is missing or corrupted at post-fix entry. Demoted hidden state to `stopped/workflow_crashed` if it was still `fixing`. If the state comment exists but is invisible, verify the `AUTO_REVIEW_STATE_COMMENT_AUTHORS` configuration, then use `/restart-review` to resume.");
     return;
   }
   if (stateResult.commentId !== inputs.commentId) {

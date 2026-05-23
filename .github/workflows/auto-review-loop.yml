@@ -281,10 +281,19 @@ jobs:
           # this crash. Network / parse errors default to 0 so we still
           # post the fail-safe.
           SINCE=$(date -u -d '90 seconds ago' +%Y-%m-%dT%H:%M:%SZ)
-          RECENT_STOP=$(gh api \
-            "repos/${REPO}/issues/${PR_NUM}/comments?since=${SINCE}&per_page=100" \
-            --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("🛑 **Auto-review stopped**")))] | length' \
-            2>/dev/null || echo 0)
+          # TY-310 #1: `--paginate` walks every comment in the 90s window. The
+          # old `per_page=100` (no pagination) returned only the OLDEST 100
+          # comments — GitHub serves issue comments in ascending chronological
+          # order — so on a high-traffic PR the recent 2A stop notification
+          # could fall outside the page and 2B would post a duplicate. We emit
+          # one `.id` per matching comment and count lines with `grep -c`,
+          # because `--paginate` runs the `--jq` filter per page: a
+          # `[.[] | ...] | length` would print one count per page and break the
+          # `-gt 0` numeric test below.
+          RECENT_STOP=$(gh api --paginate \
+            "repos/${REPO}/issues/${PR_NUM}/comments?since=${SINCE}" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("🛑 **Auto-review stopped**"))) | .id' \
+            2>/dev/null | grep -c . || true)
           if [ "${RECENT_STOP:-0}" -gt 0 ]; then
             echo "::notice::TY-282 2A already posted a top-level stop notification within 90s (${RECENT_STOP} found); skipping 2B fail-safe to avoid duplicate."
             exit 0

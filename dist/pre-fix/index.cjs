@@ -20474,7 +20474,15 @@ async function recentAutoMergeSkipExists(owner, name, pr, token) {
     const sinceIso = new Date(Date.now() - AUTO_MERGE_SKIP_DEDUP_WINDOW_MS).toISOString();
     const stdout = await ghApi([
       "api",
-      `repos/${owner}/${name}/issues/${pr}/comments?since=${encodeURIComponent(sinceIso)}&per_page=30`,
+      // TY-310 #1: `--paginate` walks every comment in the `since=` window.
+      // The old `per_page=30` (no pagination) returned only the *oldest* 30
+      // comments — GitHub serves issue comments in ascending chronological
+      // order — so on a high-traffic PR the most recent skip comment we want
+      // to dedup against could fall outside the page, silently bypassing
+      // dedup and emitting a duplicate notification. `since=` already bounds
+      // the range, so no `per_page` is needed.
+      `repos/${owner}/${name}/issues/${pr}/comments?since=${encodeURIComponent(sinceIso)}`,
+      "--paginate",
       "--jq",
       ".[].body"
     ], token);

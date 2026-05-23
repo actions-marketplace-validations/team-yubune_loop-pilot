@@ -81,6 +81,16 @@ Initial status comment cap check (TY-309):
   `vars.MAX_REVIEW_ITERATIONS` into the init action so the cap matches operator
   config from the first comment, not just from the first post-fix iteration.
 
+Crash-notification dedup check (TY-310 #1):
+
+- [ ] Force a 2A stop notification (e.g. let the loop reach a terminal
+  `stopped` state) and then trigger the `auto-review-loop.yml` 2B fail-safe
+  within the same 90s window (a crashed loop run on the same PR). Confirm only
+  **one** top-level `🛑` notification lands on the PR. The 2B dedup query uses
+  `gh api --paginate`, so even on a high-traffic PR — where the recent 2A
+  comment would fall outside a single unpaginated page — the fail-safe still
+  finds it and skips the duplicate.
+
 ## External Fork PR Validation
 
 The private source repository cannot currently run the external-fork PR E2E

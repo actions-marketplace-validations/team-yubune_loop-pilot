@@ -826,4 +826,48 @@ describe("postAutoMergeSkipNotification (TY-295)", () => {
     const path = dedupArgs[1] ?? "";
     expect(path).toContain("/comments?since=");
   });
+
+  it("uses --paginate (not per_page=30) so the dedup target isn't missed past the first page (TY-310 #1)", async () => {
+    mockedGhApi.mockResolvedValueOnce("");
+    mockedGhApi.mockResolvedValueOnce(String(POSTED_COMMENT_ID));
+
+    await postAutoMergeSkipNotification(
+      "team-yubune",
+      "test-auto-ai-review",
+      65,
+      { kind: "head_empty" },
+      RUN_URL,
+      "token",
+    );
+
+    const dedupArgs = mockedGhApi.mock.calls[0]![0] as readonly string[];
+    expect(dedupArgs).toContain("--paginate");
+    const path = dedupArgs[1] ?? "";
+    expect(path).not.toContain("per_page=30");
+  });
+
+  it("detects a dedup-target comment even when it appears after many earlier comments (TY-310 #1)", async () => {
+    // High-traffic 90s window: 120 non-matching bodies followed by the recent
+    // skip notification. The old `per_page=30` (no pagination) returned only the
+    // OLDEST 30 comments — GitHub serves issue comments ascending — so the late
+    // prefix line was invisible and the duplicate post fired. With --paginate the
+    // whole window is scanned and the late match suppresses the duplicate.
+    const bodies = [
+      ...Array.from({ length: 120 }, (_, i) => `unrelated comment ${i}`),
+      `${AUTO_MERGE_SKIP_PREFIX} — most recent skip notification`,
+    ].join("\n");
+    mockedGhApi.mockResolvedValueOnce(bodies);
+
+    await postAutoMergeSkipNotification(
+      "team-yubune",
+      "test-auto-ai-review",
+      65,
+      { kind: "ci_failed", failures: [{ name: "ci", conclusion: "failure" }] },
+      RUN_URL,
+      "token",
+    );
+
+    // Only the dedup query ran; the suppressed path makes no second postComment call.
+    expect(mockedGhApi).toHaveBeenCalledTimes(1);
+  });
 });
