@@ -335,6 +335,25 @@ describe("runInit", () => {
     );
   });
 
+  it("reflects an operator-configured cap in the initial status comment (TY-309)", async () => {
+    // Regression guard for the init-comment cap matching vars.MAX_REVIEW_ITERATIONS.
+    // The init workflow plumbs vars.MAX_REVIEW_ITERATIONS into the action; once
+    // it lands in config.maxReviewIterations it must reach postInitialStatusComment
+    // so the very first comment shows "Iterations: 0 / N" with the operator's N
+    // rather than the default 20.
+    const deps = makeDeps({ found: false, corrupted: false, commentId: null });
+
+    await runInit({ ...baseConfig, maxReviewIterations: 50 }, deps);
+
+    expect(deps.postInitialStatusComment).toHaveBeenCalledWith(
+      "team-yubune",
+      "test-auto-ai-review",
+      227,
+      50,
+      "github-token",
+    );
+  });
+
   it("swallows postInitialStatusComment failures without rolling back init (TY-291 #2)", async () => {
     const deps = makeDeps({ found: false, corrupted: false, commentId: null });
     deps.postInitialStatusComment = vi

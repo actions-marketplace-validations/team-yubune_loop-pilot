@@ -16,6 +16,19 @@ describe("Workflow A trigger guard", () => {
     expect(initWorkflow).toContain("secrets.CODEX_REVIEW_REQUEST_TOKEN");
   });
 
+  it("plumbs vars.MAX_REVIEW_ITERATIONS into init so the initial status comment shows the operator cap (TY-309)", () => {
+    // Without this the init step falls back to the default 20 and the first
+    // status comment shows a cap that diverges from vars.MAX_REVIEW_ITERATIONS
+    // until the first post-fix iteration overwrites it. Must use the same
+    // expression as auto-review-loop.yml so both workflows agree on the cap.
+    expect(initWorkflow).toContain(
+      "max-review-iterations: ${{ vars.MAX_REVIEW_ITERATIONS || '20' }}",
+    );
+    expect(loopWorkflow).toContain(
+      "max-review-iterations: ${{ vars.MAX_REVIEW_ITERATIONS || '20' }}",
+    );
+  });
+
   it("listens for the labeled event so adding the gate label can start auto-review", () => {
     expect(initWorkflow).toContain("types: [opened, ready_for_review, labeled]");
   });

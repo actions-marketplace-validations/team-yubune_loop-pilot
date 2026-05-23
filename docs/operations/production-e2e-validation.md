@@ -73,6 +73,14 @@ The final run used:
 
 No Node.js 20 action deprecation warning was observed in that run.
 
+Initial status comment cap check (TY-309):
+
+- [ ] Set `vars.MAX_REVIEW_ITERATIONS=10`, open a PR, and confirm the initial
+  status comment posted by Workflow A shows `**Iterations**: 0 / 10` (not the
+  default `0 / 20`). This verifies `auto-review-init.yml` plumbs
+  `vars.MAX_REVIEW_ITERATIONS` into the init action so the cap matches operator
+  config from the first comment, not just from the first post-fix iteration.
+
 ## External Fork PR Validation
 
 The private source repository cannot currently run the external-fork PR E2E

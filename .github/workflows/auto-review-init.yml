@@ -59,6 +59,12 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           codex-review-request-token: ${{ secrets.CODEX_REVIEW_REQUEST_TOKEN }}
           pr-number: ${{ github.event.pull_request.number }}
+          # TY-291 #3 / TY-309: reflect the operator-configured cap in the
+          # initial status comment's **Iterations** header. Use the same
+          # expression as auto-review-loop.yml so both workflows agree on the cap
+          # (without this, the initial comment shows the default 20 until the
+          # first post-fix iteration overwrites it with the real value).
+          max-review-iterations: ${{ vars.MAX_REVIEW_ITERATIONS || '20' }}
           # TY-272 #A: trusted state-comment author override; empty falls
           # back to `github-actions[bot]`.
           auto-review-state-comment-authors: ${{ vars.AUTO_REVIEW_STATE_COMMENT_AUTHORS }}
