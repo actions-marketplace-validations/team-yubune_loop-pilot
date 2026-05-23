@@ -8,7 +8,6 @@ import {
   parseStateCommentRecord,
   updateStateComment,
   StateUpdateConflictError,
-  toHttpDate,
 } from "../src/state-manager.js";
 import type { ReviewState, FindingsHashEntry } from "../src/types.js";
 import { execFile } from "node:child_process";
@@ -599,27 +598,5 @@ describe("buildTrustedAuthorJqFilter (TY-272 #A)", () => {
     expect(buildTrustedAuthorJqFilter(["github-actions[bot]", "bad name"])).toBe(
       '.user.login == "github-actions[bot]"',
     );
-  });
-});
-
-describe("toHttpDate", () => {
-  it("converts an ISO 8601 timestamp to RFC 7231 IMF-fixdate", () => {
-    // GitHub returns updated_at like "2026-05-14T21:42:19Z"; the
-    // If-Unmodified-Since header requires "Thu, 14 May 2026 21:42:19 GMT".
-    // Without the conversion the PATCH gets rejected before the 412
-    // optimistic-lock path can run.
-    expect(toHttpDate("2026-05-14T21:42:19Z")).toBe(
-      "Thu, 14 May 2026 21:42:19 GMT",
-    );
-  });
-
-  it("preserves UTC when the source has a non-UTC offset", () => {
-    expect(toHttpDate("2026-05-14T23:42:19+02:00")).toBe(
-      "Thu, 14 May 2026 21:42:19 GMT",
-    );
-  });
-
-  it("throws on unparseable input rather than emit `Invalid Date`", () => {
-    expect(() => toHttpDate("not-a-date")).toThrow(/invalid timestamp/);
   });
 });

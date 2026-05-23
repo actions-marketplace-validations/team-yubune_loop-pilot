@@ -521,22 +521,6 @@ async function fetchStateComment(
   return parseCommentSnapshot(stdout.trim(), "fetchStateComment");
 }
 
-/**
- * Convert an ISO 8601 timestamp (e.g. `2026-05-14T21:42:19Z`) — the form
- * GitHub's `updated_at` field returns — into the RFC 7231 IMF-fixdate
- * (`Thu, 14 May 2026 21:42:19 GMT`) required by the HTTP
- * `If-Unmodified-Since` header. Passing the raw ISO string makes GitHub
- * reject the PATCH with a 4xx, which propagates as a workflow failure
- * instead of the intended optimistic-lock 412 round-trip.
- */
-export function toHttpDate(isoTimestamp: string): string {
-  const date = new Date(isoTimestamp);
-  if (Number.isNaN(date.getTime())) {
-    throw new Error(`toHttpDate: invalid timestamp ${isoTimestamp}`);
-  }
-  return date.toUTCString();
-}
-
 async function patchStateComment(
   owner: string,
   name: string,

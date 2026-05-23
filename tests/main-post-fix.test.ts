@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "../src/config.js";
 import {
+  countUntrackedAddedLines,
   logSecretScanWarnings,
   runPostFix,
   SECRET_WARN_LOG_CAP,
@@ -2691,5 +2692,27 @@ describe("logSecretScanWarnings (TY-298 #2)", () => {
 
       expect(info).not.toHaveBeenCalled();
     });
+  });
+});
+
+// TY-326 #2 (BUG-04): untracked added-line counts must match `git diff
+// --numstat` so the scope maxLines budget is symmetric with tracked files.
+describe("countUntrackedAddedLines", () => {
+  it("does not over-count the trailing newline (matches git's added-line count)", () => {
+    // git reports 2 additions for "a\nb\n"; split("\n") would yield 3.
+    expect(countUntrackedAddedLines("a\nb\n")).toBe(2);
+  });
+
+  it("counts a file with no trailing newline by its line count", () => {
+    expect(countUntrackedAddedLines("a\nb")).toBe(2);
+    expect(countUntrackedAddedLines("only-one-line")).toBe(1);
+  });
+
+  it("returns 0 for empty content", () => {
+    expect(countUntrackedAddedLines("")).toBe(0);
+  });
+
+  it("counts a single trailing-newline line as 1", () => {
+    expect(countUntrackedAddedLines("a\n")).toBe(1);
   });
 });

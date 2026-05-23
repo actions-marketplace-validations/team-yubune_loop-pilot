@@ -18639,6 +18639,7 @@ __export(main_post_fix_exports, {
   SECRET_WARN_LOG_CAP: () => SECRET_WARN_LOG_CAP,
   SECRET_WARN_LOG_CAP_PER_PATTERN: () => SECRET_WARN_LOG_CAP_PER_PATTERN,
   SECRET_WARN_PATH_SUPPRESS_RE: () => SECRET_WARN_PATH_SUPPRESS_RE,
+  countUntrackedAddedLines: () => countUntrackedAddedLines,
   formatScopeViolationDetail: () => formatScopeViolationDetail,
   logSecretScanWarnings: () => logSecretScanWarnings,
   runPostFix: () => runPostFix
@@ -19274,8 +19275,9 @@ function intInput(inputName, envName, defaultValue, min) {
   const raw = input(inputName, envName, "");
   if (raw === "")
     return defaultValue;
-  const parsed = parseInt(raw, 10);
-  if (isNaN(parsed)) {
+  const trimmed = raw.trim();
+  const parsed = parseInt(trimmed, 10);
+  if (isNaN(parsed) || String(parsed) !== trimmed) {
     throw new Error(`Input ${inputName} / env ${envName} must be an integer, got: ${raw}`);
   }
   if (min !== void 0 && parsed < min) {
@@ -21086,6 +21088,11 @@ var defaultDeps3 = {
     }
   }
 };
+function countUntrackedAddedLines(content) {
+  if (content === "")
+    return 0;
+  return content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
+}
 function readPostFixInputs() {
   const commentId = parseInt(getInput("comment-id"), 10);
   const iteration = parseInt(getInput("iteration"), 10);
@@ -21356,7 +21363,7 @@ async function runPostFix(config, deps = defaultDeps3, inputs = readPostFixInput
     if (content === null) {
       return { path, added: -1, deleted: -1 };
     }
-    const added = content.length === 0 ? 0 : content.split("\n").length;
+    const added = countUntrackedAddedLines(content);
     return { path, added, deleted: 0 };
   });
   const changedFiles = [...trackedChanges, ...untrackedChanges];
@@ -21485,7 +21492,7 @@ async function runPostFix(config, deps = defaultDeps3, inputs = readPostFixInput
     if (content === null) {
       return { path, added: -1, deleted: -1 };
     }
-    const added = content.length === 0 ? 0 : content.split("\n").length;
+    const added = countUntrackedAddedLines(content);
     return { path, added, deleted: 0 };
   });
   const postCheckChangedFiles = [...postCheckTracked, ...postCheckUntracked];
@@ -21574,7 +21581,7 @@ async function runPostFix(config, deps = defaultDeps3, inputs = readPostFixInput
       if (content === null) {
         return { path, added: -1, deleted: -1 };
       }
-      const added = content.length === 0 ? 0 : content.split("\n").length;
+      const added = countUntrackedAddedLines(content);
       return { path, added, deleted: 0 };
     });
     const postBuildChangedFiles = [
@@ -21832,6 +21839,7 @@ runIfNotVitest(run, () => demoteFixingOnCrash("post-fix"));
   SECRET_WARN_LOG_CAP,
   SECRET_WARN_LOG_CAP_PER_PATTERN,
   SECRET_WARN_PATH_SUPPRESS_RE,
+  countUntrackedAddedLines,
   formatScopeViolationDetail,
   logSecretScanWarnings,
   runPostFix

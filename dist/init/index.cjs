@@ -19304,8 +19304,9 @@ function intInput(inputName, envName, defaultValue, min) {
   const raw = input(inputName, envName, "");
   if (raw === "")
     return defaultValue;
-  const parsed = parseInt(raw, 10);
-  if (isNaN(parsed)) {
+  const trimmed = raw.trim();
+  const parsed = parseInt(trimmed, 10);
+  if (isNaN(parsed) || String(parsed) !== trimmed) {
     throw new Error(`Input ${inputName} / env ${envName} must be an integer, got: ${raw}`);
   }
   if (min !== void 0 && parsed < min) {

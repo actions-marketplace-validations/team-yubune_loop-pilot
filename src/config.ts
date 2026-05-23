@@ -84,8 +84,8 @@ export interface BaseConfig {
   // Severity threshold (TY-256). Findings whose severity is strictly below the
   // threshold (numerically larger; e.g., P3 when threshold is P2) are excluded
   // from the auto-fix pipeline and counted under `belowThreshold` in observability
-  // logs. Default `P2` preserves prior behavior. Invalid values fall back to `P2`
-  // with a warning.
+  // logs. Default `P3` (the lowest severity), so by default every P0/P1/P2/P3
+  // finding is in scope. Invalid values fall back to `P3` with a warning.
   severityThreshold: Severity;
   // Block-list spec (TY-271). `.gitignore`-style syntax forwarded raw to
   // `parseBlockPathsSpec` in scope-checker.ts. Empty default keeps the
@@ -430,8 +430,13 @@ function intInput(
 ): number {
   const raw = input(inputName, envName, "");
   if (raw === "") return defaultValue;
-  const parsed = parseInt(raw, 10);
-  if (isNaN(parsed)) {
+  const trimmed = raw.trim();
+  const parsed = parseInt(trimmed, 10);
+  // TY-326 #4: parseInt accepts trailing garbage / decimals (`20abc` → 20,
+  // `2.5` → 2), silently dropping the rest. Require the parse to consume the
+  // whole (trimmed) value so misconfigurations fail fast instead of taking a
+  // truncated number.
+  if (isNaN(parsed) || String(parsed) !== trimmed) {
     throw new Error(`Input ${inputName} / env ${envName} must be an integer, got: ${raw}`);
   }
   if (min !== undefined && parsed < min) {

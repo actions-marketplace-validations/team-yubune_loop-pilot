@@ -214,6 +214,19 @@ const defaultDeps: PostFixDeps = {
   },
 };
 
+/**
+ * Count added lines for an untracked file the way `git diff --numstat` counts a
+ * brand-new tracked file. TY-326 #2 (BUG-04): `split("\n").length` over-counts
+ * by one for the common trailing-newline file (`"a\nb\n"` → `["a","b",""]` → 3,
+ * but git reports 2 additions). Tracked files already use git's real count via
+ * `parseGitNumstat`, so without this the scope `maxLines` budget was applied
+ * asymmetrically to untracked (claude-authored) files.
+ */
+export function countUntrackedAddedLines(content: string): number {
+  if (content === "") return 0;
+  return content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
+}
+
 function readPostFixInputs(): PostFixInputs {
   const commentId = parseInt(core.getInput("comment-id"), 10);
   const iteration = parseInt(core.getInput("iteration"), 10);
@@ -839,7 +852,7 @@ export async function runPostFix(
       if (content === null) {
         return { path, added: -1, deleted: -1 };
       }
-      const added = content.length === 0 ? 0 : content.split("\n").length;
+      const added = countUntrackedAddedLines(content);
       return { path, added, deleted: 0 };
     });
   const changedFiles: ChangedFile[] = [...trackedChanges, ...untrackedChanges];
@@ -1059,7 +1072,7 @@ export async function runPostFix(
       if (content === null) {
         return { path, added: -1, deleted: -1 };
       }
-      const added = content.length === 0 ? 0 : content.split("\n").length;
+      const added = countUntrackedAddedLines(content);
       return { path, added, deleted: 0 };
     });
   const postCheckChangedFiles: ChangedFile[] = [...postCheckTracked, ...postCheckUntracked];
@@ -1220,7 +1233,7 @@ export async function runPostFix(
         if (content === null) {
           return { path, added: -1, deleted: -1 };
         }
-        const added = content.length === 0 ? 0 : content.split("\n").length;
+        const added = countUntrackedAddedLines(content);
         return { path, added, deleted: 0 };
       });
     const postBuildChangedFiles: ChangedFile[] = [

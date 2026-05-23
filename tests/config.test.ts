@@ -189,6 +189,58 @@ describe("loadInitConfig — integer input range validation (TY-267 #15)", () =>
   });
 });
 
+describe("loadBaseConfig — severityThreshold (TY-256 / TY-326 #1)", () => {
+  let restore: (() => void) | null = null;
+
+  afterEach(() => {
+    restore?.();
+    restore = null;
+  });
+
+  it("defaults to P3 when unset (pins the doc-comment to the implementation)", () => {
+    restore = withEnv({ ...REQUIRED_ENV, AUTO_REVIEW_SEVERITY_THRESHOLD: undefined });
+    expect(loadInitConfig().severityThreshold).toBe("P3");
+  });
+
+  it("falls back to P3 on an invalid value", () => {
+    restore = withEnv({ ...REQUIRED_ENV, AUTO_REVIEW_SEVERITY_THRESHOLD: "P9" });
+    expect(loadInitConfig().severityThreshold).toBe("P3");
+  });
+
+  it("honours an explicit valid threshold", () => {
+    restore = withEnv({ ...REQUIRED_ENV, AUTO_REVIEW_SEVERITY_THRESHOLD: "P1" });
+    expect(loadInitConfig().severityThreshold).toBe("P1");
+  });
+});
+
+describe("intInput — full-match validation (TY-326 #4)", () => {
+  let restore: (() => void) | null = null;
+
+  beforeEach(() => {
+    restore = withEnv({ ...REQUIRED_ENV, MAX_REVIEW_ITERATIONS: undefined });
+  });
+
+  afterEach(() => {
+    restore?.();
+    restore = null;
+  });
+
+  it("rejects trailing garbage instead of silently truncating", () => {
+    process.env.MAX_REVIEW_ITERATIONS = "20abc";
+    expect(() => loadInitConfig()).toThrow(/must be an integer, got: 20abc/);
+  });
+
+  it("rejects a decimal instead of flooring it", () => {
+    process.env.MAX_REVIEW_ITERATIONS = "2.5";
+    expect(() => loadInitConfig()).toThrow(/must be an integer, got: 2\.5/);
+  });
+
+  it("accepts a clean integer (and surrounding whitespace)", () => {
+    process.env.MAX_REVIEW_ITERATIONS = " 20 ";
+    expect(loadInitConfig().maxReviewIterations).toBe(20);
+  });
+});
+
 describe("loadInitConfig — scope policy env-var fallback", () => {
   let restore: (() => void) | null = null;
 
