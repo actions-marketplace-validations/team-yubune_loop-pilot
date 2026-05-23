@@ -20860,9 +20860,8 @@ function summaryMayContainFindings(body, threshold) {
 // dist/findings-hash.js
 var import_node_crypto = require("node:crypto");
 function computeFindingsHash(findings) {
-  const normalized = findings.map(normalizeFinding);
-  const uniqueSorted = [...new Set(normalized)].sort();
-  return stableHash(JSON.stringify(uniqueSorted));
+  const normalized = findings.map(normalizeFinding).sort();
+  return stableHash(JSON.stringify(normalized));
 }
 function normalizeFinding(finding) {
   const normalizedBody = finding.body.replace(/\r\n/g, "\n").replace(/[ \t]+\n/g, "\n").trim();

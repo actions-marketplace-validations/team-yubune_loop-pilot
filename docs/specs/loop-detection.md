@@ -32,7 +32,10 @@ def compute_findings_hash(findings):
     言語・バージョン間で表現が異なる可能性があるため、
     JSON シリアライズで決定論的な文字列表現を保証する。"""
     import json
-    normalized = sorted(set(normalize_finding(f) for f in findings))
+    # set() で重複除去しない (TY-307)。同 (severity, path, body) で line だけ
+    # 異なる finding は別エントリとして残す。dedup すると 2 件指摘の iteration と
+    # 片方修正後の 1 件 iteration が同一 hash に潰れ、phantom loop_detected を生む。
+    normalized = sorted(normalize_finding(f) for f in findings)
     # 各タプルをリストに変換し、JSON で決定論的にシリアライズ
     serializable = [list(t) for t in normalized]
     return stable_hash(json.dumps(serializable, separators=(",", ":"), sort_keys=True))
@@ -64,6 +67,7 @@ def is_loop(current_findings, findings_hash_history):
   2. `[ \t]+\n` → `\n` (行末 trailing whitespace 除去)
   3. body 全体に `trim()` (先頭末尾の whitespace 除去)
   内部 whitespace runs (行内の連続 space) は **保持** する。コード片 / stack trace の意図的なインデントを潰すと「実際に違う content」を同一視するリスクがあるため、edge whitespace だけを正規化する
+- 同 `(severity, path, body)` で複数の finding は **別エントリとして** hash に寄与する（TY-307。`set()` による dedup を行わない）。これは Codex が同じ論理的指摘を複数アンカー（同 body・別 line）で報告した時に、片方修正された次 iteration の hash を別物として扱い、phantom `loop_detected` を防ぐため。`line` をキーから除外する不変条件（TY-276 #7 / TY-280）は維持されるので、純粋な line shift だけでは hash は変わらない
 - **hidden comment に保持するのはハッシュ値のみ**。`normalized_set` は保持しない（コメントサイズ制限のため）
 - そのため、異なる workflow 実行間では**ハッシュの完全一致のみ**で判定する。部分一致（80%マッチ）の判定は `normalized_set` が必要なため、hidden comment からの復元では不可能
 - **振動パターン（A → B → A）の検知:** `findings_hash_history` に直近 N 回分を保持し、いずれかとの一致でループ検知する（直近1回のみの比較では検知できない）

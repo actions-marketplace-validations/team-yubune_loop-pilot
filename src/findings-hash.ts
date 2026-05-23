@@ -2,9 +2,14 @@ import { createHash } from "node:crypto";
 import type { Finding } from "./types.js";
 
 export function computeFindingsHash(findings: Finding[]): string {
-  const normalized = findings.map(normalizeFinding);
-  const uniqueSorted = [...new Set(normalized)].sort();
-  return stableHash(JSON.stringify(uniqueSorted));
+  // Duplicates are kept (no Set dedup): two findings that share
+  // (severity, path, bodyHash) but sit on different lines must contribute
+  // separate hash entries. Collapsing them would make a 2-finding iteration
+  // and a 1-finding iteration (after one is fixed) hash identically, tripping
+  // a phantom `loop_detected`. `line` stays excluded from the key so genuine
+  // line shifts still don't change the hash (TY-276 #7 / TY-280 invariant).
+  const normalized = findings.map(normalizeFinding).sort();
+  return stableHash(JSON.stringify(normalized));
 }
 
 function normalizeFinding(finding: Finding): string {

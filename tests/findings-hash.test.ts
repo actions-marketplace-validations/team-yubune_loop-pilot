@@ -106,4 +106,40 @@ describe("computeFindingsHash", () => {
       );
     });
   });
+
+  // TY-307: Codex reports the same logical issue at two anchors (same body,
+  // different lines). Dropping the Set dedup keeps both as separate hash
+  // entries so a 2-finding iteration and the 1-finding iteration left after
+  // one is fixed hash differently — preventing a phantom `loop_detected`.
+  describe("TY-307: per-line finding count is preserved", () => {
+    const anchorA: Finding = { ...baseFinding, line: 10, body: "use let" };
+    const anchorB: Finding = { ...baseFinding, line: 50, body: "use let" };
+
+    it("#A: two same-body anchors hash differently from one of them alone", () => {
+      expect(computeFindingsHash([anchorA, anchorB])).not.toBe(
+        computeFindingsHash([anchorB]),
+      );
+    });
+
+    it("#B: a single finding's hash is unaffected by its line (line still excluded)", () => {
+      expect(computeFindingsHash([anchorA])).toBe(
+        computeFindingsHash([anchorB]),
+      );
+    });
+
+    it("#C: a duplicated finding hashes differently from a single one (count matters)", () => {
+      const single: Finding = { ...baseFinding, line: 10, body: "use let" };
+      expect(computeFindingsHash([single, single])).not.toBe(
+        computeFindingsHash([single]),
+      );
+    });
+
+    it("#D: order remains irrelevant across different paths", () => {
+      const inFoo: Finding = { ...baseFinding, path: "src/foo.ts", body: "use let" };
+      const inBar: Finding = { ...baseFinding, path: "src/bar.ts", body: "use let" };
+      expect(computeFindingsHash([inFoo, inBar])).toBe(
+        computeFindingsHash([inBar, inFoo]),
+      );
+    });
+  });
 });

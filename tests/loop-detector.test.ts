@@ -150,6 +150,24 @@ describe("isLoop", () => {
     expect(isLoop([cosmeticDrift], findingsHashHistory)).toBe(true);
   });
 
+  it("TY-307 #E: no phantom loop when one of two same-body anchors is fixed", () => {
+    // Codex reported the same logical issue at two anchors (same body,
+    // different lines). The prior iteration recorded that 2-finding set; the
+    // agent fixed one anchor, so this iteration carries a single finding.
+    // Before the Set-dedup removal both sets hashed to H1 and — with the last
+    // entry at the escalated tier — `isLoop` falsely returned true even though
+    // real progress was made. With distinct hashes there is no match.
+    const anchorA: Finding = { ...baseFinding, line: 10, body: "use let" };
+    const anchorB: Finding = { ...baseFinding, line: 50, body: "use let" };
+
+    const twoAnchorHash = computeFindingsHash([anchorA, anchorB]);
+    const findingsHashHistory: FindingsHashEntry[] = [
+      { iteration: 1, hash: twoAnchorHash, modelTier: "escalated" },
+    ];
+
+    expect(isLoop([anchorB], findingsHashHistory)).toBe(false);
+  });
+
   it("TY-296: detects an A→B→C→D→A cycle after the history has been persisted through serializeState", () => {
     // Regression for TY-296: with MAX_HISTORY_ENTRIES=3 the original A was
     // trimmed before the cycle closed, so `isLoop` returned false and the
