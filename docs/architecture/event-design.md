@@ -60,6 +60,15 @@ if: >
 - 既存 state が `initialized` の場合は、前回 init が `@codex review` 投稿前に止まった未完了状態として扱い、初回レビュー投稿を継続する
 - corrupted state comment は従来通り fresh state で上書きし、初期化を継続する
 
+`runInit` の書き込み順序（TY-303）:
+
+post-fix Phase 4（[TY-286](https://linear.app/team-yubune/issue/TY-286) #A）と同形の「1st write → side-effect → 2nd write」両書きパターンに揃える。`@codex review` 投稿 → state 更新の旧順序では、投稿成功後の state 書きが失敗すると `status: initialized` のまま `@codex review` だけ投稿された状態で固定され、operator が gate label を付け直して Workflow A を再実行すると `@codex review` を二重投稿していた。
+
+- **1st write**: `status: waiting_codex`, `lastCodexRequestCommentId: null` を hidden comment に永続化する。この書き込みが成功すれば、後続の `@codex review` 投稿が落ちて Workflow A が再実行されても、既存 state は `waiting_codex` に到達済みなので `status !== "initialized"` の早期 return で再実行は no-op になる
+- **side-effect**: `@codex review` を投稿する
+- **2nd write**: `lastCodexRequestCommentId` を記録する。この書き込みは informational なので失敗しても `core.warning` に降格し、`runInit` 全体は reject しない。次の Codex review trigger で `lastProcessedReviewId` の dedup が一時的に弱まるだけで、Codex 側は同一 PR の重複 review request としてスキップする
+- **resume 判定**: 既存 state が `status: initialized` の場合は、`lastCodexRequestCommentId` の値に関わらず、常に 1st write → post → 2nd write の完全シーケンスを実行する。`lastCodexRequestCommentId !== null` であっても、旧パターンで投稿した `@codex review` は `created` イベントとして state が `initialized` のまま Workflow B に到達し、early-return で消費されているため、ループを進めるには新たな投稿が必要になる
+
 ---
 
 ## Workflow B: Codex レビュー受信 + Claude 修正（`auto-review-loop.yml`）

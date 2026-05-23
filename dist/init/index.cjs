@@ -20057,14 +20057,22 @@ async function runInit(config, deps = defaultDeps2) {
   const existing = await deps.readState(config.repoOwner, config.repoName, config.prNumber, config.githubToken);
   let commentId;
   let state = createInitialState();
+  let firstWriteExpectedUpdatedAt;
   if (existing.found) {
     commentId = existing.commentId;
-    if (existing.state.status !== "initialized") {
+    firstWriteExpectedUpdatedAt = existing.commentUpdatedAt;
+    if (existing.state.status === "waiting_codex" && existing.state.lastCodexRequestCommentId === null && existing.state.iterationCount === 0 && // Finding 2
+    existing.state.lastCodexReviewReceivedAt === null) {
+      deps.info("[init] Detected crash-window state (waiting_codex + null lastCodexRequestCommentId). Resuming 1st-write \u2192 post \u2192 2nd-write sequence.");
+      state = { ...existing.state, status: "initialized" };
+    } else if (existing.state.status !== "initialized") {
       deps.info(`Auto-review state is already ${existing.state.status}. Skipping init.`);
       deps.setOutput("comment-id", String(commentId));
       return;
+    } else {
+      deps.info("Found incomplete initialized state comment, continuing init");
+      state = { ...existing.state };
     }
-    deps.info("Found incomplete initialized state comment, continuing init");
   } else if (existing.corrupted && existing.commentId !== null) {
     deps.warning("Found corrupted state comment, overwriting with fresh state");
     commentId = existing.commentId;
@@ -20073,10 +20081,73 @@ async function runInit(config, deps = defaultDeps2) {
     commentId = await deps.createStateComment(config.repoOwner, config.repoName, config.prNumber, state, config.githubToken);
     deps.info(`Created state comment: ${commentId}`);
   }
-  const reviewRequestId = await deps.postCodexReviewRequest(config.repoOwner, config.repoName, config.prNumber, config.codexReviewRequestToken);
-  deps.info(`Posted @codex review: comment ${reviewRequestId}`);
-  state = { ...state, status: "waiting_codex", lastCodexRequestCommentId: reviewRequestId };
-  await deps.updateStateComment(config.repoOwner, config.repoName, commentId, state, config.githubToken);
+  const stateBeforeFirstWrite = { ...state };
+  state = { ...state, status: "waiting_codex", lastCodexRequestCommentId: null };
+  let firstWriteResult;
+  try {
+    if (firstWriteExpectedUpdatedAt !== void 0) {
+      firstWriteResult = await deps.updateStateComment(config.repoOwner, config.repoName, commentId, state, config.githubToken, { expectedUpdatedAt: firstWriteExpectedUpdatedAt });
+    } else {
+      firstWriteResult = await deps.updateStateComment(config.repoOwner, config.repoName, commentId, state, config.githubToken);
+    }
+  } catch (error2) {
+    if (firstWriteExpectedUpdatedAt !== void 0 && error2 instanceof StateUpdateConflictError) {
+      deps.warning(`[init] Concurrent state update detected on 1st write. Workflow B has already advanced the state; skipping init.`);
+      deps.setOutput("comment-id", String(commentId));
+      return;
+    }
+    throw error2;
+  }
+  let reviewRequestId;
+  try {
+    reviewRequestId = await deps.postCodexReviewRequest(config.repoOwner, config.repoName, config.prNumber, config.codexReviewRequestToken);
+    deps.info(`Posted @codex review: comment ${reviewRequestId}`);
+  } catch (error2) {
+    try {
+      await deps.updateStateComment(config.repoOwner, config.repoName, commentId, stateBeforeFirstWrite, config.githubToken, { expectedUpdatedAt: firstWriteResult.updatedAt });
+    } catch (rollbackError) {
+      if (rollbackError instanceof StateUpdateConflictError) {
+        deps.warning(`[init] Roll-back skipped: concurrent Workflow B update detected after @codex review post failure. Workflow B is handling the state; no terminal state needed.`);
+      } else {
+        const rbMsg = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+        deps.warning(`[init] Failed to roll back state after @codex review post failure: ${rbMsg}. Demoting to stopped/codex_request_failed.`);
+        try {
+          await deps.updateStateComment(config.repoOwner, config.repoName, commentId, { ...state, status: "stopped", stopReason: "codex_request_failed" }, config.githubToken, { expectedUpdatedAt: firstWriteResult.updatedAt });
+        } catch (stopError) {
+          if (stopError instanceof StateUpdateConflictError) {
+            deps.warning(`[init] Fallback stop write detected concurrent state update. Workflow B has already advanced the state; no terminal state needed.`);
+          } else {
+            const stopMsg = stopError instanceof Error ? stopError.message : String(stopError);
+            deps.warning(`[init] Failed to write stopped/codex_request_failed state: ${stopMsg}. State may be stuck at waiting_codex; manual intervention required.`);
+          }
+        }
+      }
+    }
+    throw error2;
+  }
+  state = {
+    ...state,
+    status: "waiting_codex",
+    lastCodexRequestCommentId: reviewRequestId
+  };
+  try {
+    await deps.updateStateComment(config.repoOwner, config.repoName, commentId, state, config.githubToken, { expectedUpdatedAt: firstWriteResult.updatedAt });
+  } catch (error2) {
+    const message = error2 instanceof Error ? error2.message : String(error2);
+    deps.warning(`[init] Failed to persist lastCodexRequestCommentId after @codex review post: ${message}. Auto-review state remains waiting_codex; the next Codex review trigger will reconcile.`);
+    if (!(error2 instanceof StateUpdateConflictError)) {
+      try {
+        await deps.updateStateComment(config.repoOwner, config.repoName, commentId, state, config.githubToken, { expectedUpdatedAt: firstWriteResult.updatedAt });
+      } catch (retryError) {
+        if (retryError instanceof StateUpdateConflictError) {
+          deps.warning(`[init] Retry to persist lastCodexRequestCommentId detected a concurrent state update. No re-post risk: either the 2nd write already committed or Workflow B has advanced.`);
+        } else {
+          const retryMsg = retryError instanceof Error ? retryError.message : String(retryError);
+          deps.warning(`[init] Retry to persist lastCodexRequestCommentId also failed: ${retryMsg}. A Workflow A rerun may re-post @codex review.`);
+        }
+      }
+    }
+  }
   try {
     const statusCommentId = await deps.postInitialStatusComment(config.repoOwner, config.repoName, config.prNumber, config.maxReviewIterations, config.githubToken);
     deps.info(`Created initial status comment: ${statusCommentId}`);
