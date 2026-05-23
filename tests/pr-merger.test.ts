@@ -353,6 +353,35 @@ describe("mergeIfChecksPass — polling path", () => {
     expect(warning?.message).toMatch(/timed out after/);
   });
 
+  it("TY-330: merges when CI completes green on the same poll the timeout elapses", async () => {
+    // pollIntervalMs=100, clockTickMs=100, timeoutMs=100. Poll 1 sees CI
+    // pending (elapsed 0 < timeout) and sleeps; poll 2 sees CI completed/green
+    // but elapsed (100) has reached the timeout. The merge gate must win over
+    // the timeout gate so a clean PR whose CI finishes in the final poll window
+    // is still auto-merged, instead of being skipped with a misleading
+    // "timed out — 0 pending" notification.
+    const skips: AutoMergeSkipKind[] = [];
+    const fake = makeDeps({
+      workflowRunPages: [
+        [run(1, "ci", "in_progress", null)],
+        [run(1, "ci", "completed", "success")],
+      ],
+      pollIntervalMs: 100,
+      timeoutMs: 100,
+      clockTickMs: 100,
+    });
+    fake.deps.postSkipNotification = async (kind) => {
+      skips.push(kind);
+    };
+    const { log } = captureLog();
+
+    await mergeIfChecksPass("o", "r", 42, "tok", log, fake.deps);
+
+    expect(fake.mergeCalls).toBe(1);
+    expect(fake.mergeShas).toEqual(["abc123"]);
+    expect(skips.find((k) => k.kind === "timeout_pending")).toBeUndefined();
+  });
+
   it("aborts when PR HEAD sha changes during polling", async () => {
     const fake = makeDeps({
       headShas: ["abc123", "def456"],

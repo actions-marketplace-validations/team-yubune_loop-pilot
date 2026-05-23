@@ -21112,6 +21112,19 @@ async function mergeIfChecksPass(owner, name, pr, token, log, overrides = {}) {
     const elapsedMs = deps.now() - startedAt;
     if (elapsedMs >= deps.timeoutMs) {
       const timeoutMinutes = Math.round(deps.timeoutMs / 6e4);
+      if (others.length > 0 && pending.length === 0 && !mergeShaLookupNull) {
+        try {
+          await deps.mergeSquash(owner, name, pr, initialHeadSha, token);
+          log.info(`[pr-merger] Auto-merge (squash) succeeded for PR #${pr} at ${initialHeadSha} (all non-self CI green as the ${timeoutMinutes} min timeout elapsed).`);
+        } catch (err) {
+          await deps.postSkipNotification?.({
+            kind: "merge_call_failed",
+            detail: errMessage(err)
+          });
+          log.warning(`[pr-merger] Failed to merge PR #${pr} (non-fatal): ${errMessage(err)}.`);
+        }
+        return;
+      }
       if (others.length === 0) {
         if (!mergeShaLookupNull) {
           try {

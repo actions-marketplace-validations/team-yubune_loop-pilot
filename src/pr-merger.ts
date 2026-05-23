@@ -497,6 +497,32 @@ export async function mergeIfChecksPass(
     const elapsedMs = deps.now() - startedAt;
     if (elapsedMs >= deps.timeoutMs) {
       const timeoutMinutes = Math.round(deps.timeoutMs / 60000);
+      // TY-330: this timeout gate is evaluated BEFORE the normal merge gate
+      // (`pending.length === 0`, below). If CI completes green on the same poll
+      // the timeout elapses, falling through here would skip a fully-mergeable
+      // PR with a misleading `timeout_pending` notification carrying an empty
+      // pending list. When every non-self run is complete and green, let the
+      // merge win — failures were already rejected at the `failed.length > 0`
+      // gate above, and `!mergeShaLookupNull` confirms GitHub settled the merge
+      // ref. The no-CI (`others.length === 0`) case keeps its own dedicated
+      // handling below.
+      if (others.length > 0 && pending.length === 0 && !mergeShaLookupNull) {
+        try {
+          await deps.mergeSquash(owner, name, pr, initialHeadSha, token);
+          log.info(
+            `[pr-merger] Auto-merge (squash) succeeded for PR #${pr} at ${initialHeadSha} (all non-self CI green as the ${timeoutMinutes} min timeout elapsed).`,
+          );
+        } catch (err) {
+          await deps.postSkipNotification?.({
+            kind: "merge_call_failed",
+            detail: errMessage(err),
+          });
+          log.warning(
+            `[pr-merger] Failed to merge PR #${pr} (non-fatal): ${errMessage(err)}.`,
+          );
+        }
+        return;
+      }
       if (others.length === 0) {
         // TY-328: no non-self CI run ever appeared within the full timeout
         // budget. The fast-path no-CI merge below only fires once
