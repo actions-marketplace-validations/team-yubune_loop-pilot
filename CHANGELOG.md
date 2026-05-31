@@ -10,6 +10,68 @@ freeze. See [docs/operations/releasing.md](docs/operations/releasing.md).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-05-31
+
+Backfill of the PoC #137–#160 fix/security wave that the initial extraction
+missed (epic TY-352). Every change touches the `@v1`-consumed surface.
+
+### Security
+- Block claude-code-action's `github_comment` / `github_inline_comment` base
+  tools in the loop's `--disallowedTools`, so an IPI-influenced agent (running
+  as `github-actions[bot]`, the trusted author of the hidden `looppilot-state`
+  comment) cannot forge that state and corrupt loop accounting (TY-353).
+- Hard-fail the secret scanner on the base64 `x-access-token:` credential that
+  `actions/checkout` persists in `.git/config`, closing a `GITHUB_TOKEN` exfil
+  path the raw-prefix patterns missed (TY-354).
+- Add an in-action fork-PR backstop: pre-fix refuses to run when the PR head
+  repo does not match the base repo, even if a consumer's workflow omits the
+  "Check fork PR" guard (TY-358, PoC #160).
+
+### Fixed
+- Surface unparseable Codex review comments and withhold auto-merge on an
+  uncertain "clean" result, so a Codex output-format drift cannot silently
+  auto-merge a PR with un-triaged findings (TY-355).
+- Bound `validateState` string fields (commit SHA, findings hashes, timestamps)
+  and validate `stopReason` against its union, so a tampered/oversized hidden
+  state cannot pass validation and exceed GitHub's 65,536-char comment limit
+  (TY-356).
+- Cap config tuning bounds (debounce, stabilize-interval, auto-merge poll &
+  timeout) and validate the stabilization-window product (≤900 s) and the
+  done-path budget (2×debounce + timeout ≤1500 s when auto-merge is enabled), so
+  an oversized value can no longer wedge the loop past the 30-min job timeout
+  (TY-357).
+- Prevent a multi-byte (CJK) status-comment entry from wiping the entire
+  history — the render now truncates an over-budget newest entry instead of
+  dropping to zero entries (TY-358, PoC #148).
+- Reject a soft `/restart-review` from a `max_iterations` stop and route it to
+  `--hard`; give a `fixing`-state soft restart accurate `--hard` recovery
+  guidance (TY-358 PoC #145, TY-359 PoC #142).
+- Report `merge_sha_unsettled` instead of a contradictory empty-pending timeout
+  when CI is green but GitHub has not settled a merge commit; `--hard` restart
+  now also clears `previousCheckFailure` (TY-358, PoC #152).
+- Gate the workflow's #2B crash notification on a healthy hidden state, so a
+  job-timeout cancellation that lands after the loop committed its work no
+  longer posts a misleading "crashed → `--hard`" notice (TY-358, PoC #147).
+- Treat Codex's standard "automated review suggestions" summary as
+  possibly-findings so the debounce is not silently skipped (TY-358, PoC #146).
+- Forward `max-review-iterations` to post-fix so its status-comment **Iterations**
+  header shows the operator-configured cap instead of the default 20 (TY-359,
+  PoC #138).
+- Harden post-fix against transient (non-412) API failures after a push, so a
+  successful repair is no longer falsely reported as crashed or demoted to
+  `codex_request_failed` (TY-359, PoC #151).
+- Decode C-quoted `git ls-files --others` paths so untracked files with control
+  characters in their names no longer trip a spurious scope violation (TY-359,
+  PoC #142).
+- Warn when `MAX_REVIEW_ITERATIONS` exceeds the findings-hash history cap, where
+  long-cycle oscillation loops can no longer be detected (TY-359, PoC #158).
+- Anchor the auto-merge-skip-notification dedup to the comment body start, so a
+  comment that merely quotes the skip prefix no longer suppresses a fresh
+  notification (TY-359, PoC #155).
+- Second-truncate the `lastCodexReviewReceivedAt` fallback timestamp to match
+  GitHub's second precision, avoiding lexicographic re-processing of an
+  already-seen comment (TY-359, PoC #150).
+
 ## [1.2.0] - 2026-05-31
 
 ### Added
