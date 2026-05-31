@@ -10,6 +10,8 @@ freeze. See [docs/operations/releasing.md](docs/operations/releasing.md).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-05-31
+
 ### Fixed
 - The reusable `loop.yml` workflow now forwards the `LOOPPILOT_BLOCK_PATHS`,
   `LOOPPILOT_SCOPE_MAX_FILES`, and `LOOPPILOT_SCOPE_MAX_LINES` repository
