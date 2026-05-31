@@ -10,6 +10,8 @@ freeze. See [docs/operations/releasing.md](docs/operations/releasing.md).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-05-31
+
 ### Added
 - In-job `@codex review` acknowledgement watchdog (TY-334, ported from the
   upstream PoC). After posting `@codex review`, init / post-fix / `/restart-review`
