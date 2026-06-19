@@ -63,4 +63,79 @@ describe("isCodexUsageLimitMessage", () => {
   it("does not match an empty string", () => {
     expect(isCodexUsageLimitMessage("")).toBe(false);
   });
+
+  it("ES-425: matches 'rate limit' phrasing", () => {
+    expect(
+      isCodexUsageLimitMessage(
+        "You have hit the Codex rate limit. Please wait before requesting another review.",
+      ),
+    ).toBe(true);
+  });
+
+  it("ES-425: matches 'usage cap' phrasing", () => {
+    expect(
+      isCodexUsageLimitMessage(
+        "Your Codex usage cap has been reached for this billing period.",
+      ),
+    ).toBe(true);
+  });
+
+  it("ES-425: matches 'limit exceeded' standalone phrasing", () => {
+    expect(
+      isCodexUsageLimitMessage(
+        "Codex limit exceeded — no more reviews available today.",
+      ),
+    ).toBe(true);
+  });
+
+  it("ES-425: matches 'quota exceeded' phrasing", () => {
+    expect(
+      isCodexUsageLimitMessage(
+        "Your Codex quota has been exceeded.",
+      ),
+    ).toBe(true);
+  });
+
+  it("ES-425: matches 'rate limited' phrasing", () => {
+    expect(
+      isCodexUsageLimitMessage(
+        "Codex is currently rate limited. Try again later.",
+      ),
+    ).toBe(true);
+  });
+
+  it("ES-425: matches noun-first 'Codex rate limit reached' phrasing", () => {
+    expect(
+      isCodexUsageLimitMessage("Codex rate limit reached. Try again later."),
+    ).toBe(true);
+    expect(
+      isCodexUsageLimitMessage("Codex rate limit exceeded for this period."),
+    ).toBe(true);
+  });
+
+  it("ES-425: does not match when body contains a severity badge (review, not status notice)", () => {
+    expect(
+      isCodexUsageLimitMessage(
+        "P1 Codex is rate limited but the retry logic is wrong\n\nFix the backoff.",
+      ),
+    ).toBe(false);
+  });
+
+  it("ES-425: does not match a review finding that mentions rate limiting in code context", () => {
+    expect(
+      isCodexUsageLimitMessage(
+        "P1 The Codex rate limit handler does not back off exponentially",
+      ),
+    ).toBe(false);
+    expect(
+      isCodexUsageLimitMessage(
+        "P1 Codex rate limited requests are retried too aggressively",
+      ),
+    ).toBe(false);
+    expect(
+      isCodexUsageLimitMessage(
+        "P1 This path hit the Codex rate limit",
+      ),
+    ).toBe(false);
+  });
 });

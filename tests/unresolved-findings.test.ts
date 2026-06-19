@@ -32,6 +32,7 @@ function makeGraphQLResponse(
 
 function makeThread(opts: {
   isResolved?: boolean;
+  isOutdated?: boolean;
   path?: string;
   line?: number | null;
   authorLogin?: string;
@@ -43,6 +44,7 @@ function makeThread(opts: {
   return {
     id: `thread-${opts.databaseId ?? 1}`,
     isResolved: opts.isResolved ?? false,
+    isOutdated: opts.isOutdated ?? false,
     path: opts.path ?? "src/index.ts",
     line: opts.line === undefined ? 10 : opts.line,
     comments: {
@@ -82,7 +84,7 @@ describe("fetchUnresolvedCodexFindings", () => {
       ]),
     );
 
-    const findings = await fetchUnresolvedCodexFindings(defaultParams);
+    const { findings } = await fetchUnresolvedCodexFindings(defaultParams);
 
     expect(findings).toHaveLength(2);
     expect(findings[0]).toMatchObject({
@@ -109,7 +111,7 @@ describe("fetchUnresolvedCodexFindings", () => {
       ]),
     );
 
-    const findings = await fetchUnresolvedCodexFindings(defaultParams);
+    const { findings } = await fetchUnresolvedCodexFindings(defaultParams);
 
     expect(findings).toHaveLength(1);
     expect(findings[0].commentId).toBe(202);
@@ -123,7 +125,7 @@ describe("fetchUnresolvedCodexFindings", () => {
       ]),
     );
 
-    const findings = await fetchUnresolvedCodexFindings(defaultParams);
+    const { findings } = await fetchUnresolvedCodexFindings(defaultParams);
 
     expect(findings).toHaveLength(1);
     expect(findings[0].commentId).toBe(302);
@@ -140,7 +142,7 @@ describe("fetchUnresolvedCodexFindings", () => {
       ]),
     );
 
-    const findings = await fetchUnresolvedCodexFindings({
+    const { findings } = await fetchUnresolvedCodexFindings({
       ...defaultParams,
       codexBotLogin: "chatgpt-codex-connector[bot]",
     });
@@ -157,7 +159,7 @@ describe("fetchUnresolvedCodexFindings", () => {
       ]),
     );
 
-    const findings = await fetchUnresolvedCodexFindings(defaultParams);
+    const { findings } = await fetchUnresolvedCodexFindings(defaultParams);
 
     expect(findings).toHaveLength(1);
     expect(findings[0].commentId).toBe(401);
@@ -172,7 +174,7 @@ describe("fetchUnresolvedCodexFindings", () => {
       ]),
     );
 
-    const findings = await fetchUnresolvedCodexFindings(defaultParams, {
+    const { findings } = await fetchUnresolvedCodexFindings(defaultParams, {
       warning: warn,
     });
 
@@ -198,7 +200,7 @@ describe("fetchUnresolvedCodexFindings", () => {
         ]),
       );
 
-    const findings = await fetchUnresolvedCodexFindings(defaultParams);
+    const { findings } = await fetchUnresolvedCodexFindings(defaultParams);
 
     expect(findings).toHaveLength(2);
     expect(findings[0].commentId).toBe(601);
@@ -209,7 +211,7 @@ describe("fetchUnresolvedCodexFindings", () => {
   it("returns empty array when no threads exist", async () => {
     mockGhApi.mockResolvedValueOnce(makeGraphQLResponse([]));
 
-    const findings = await fetchUnresolvedCodexFindings(defaultParams);
+    const { findings } = await fetchUnresolvedCodexFindings(defaultParams);
 
     expect(findings).toHaveLength(0);
   });
@@ -241,7 +243,7 @@ describe("fetchUnresolvedCodexFindings", () => {
       ]),
     );
 
-    const findings = await fetchUnresolvedCodexFindings(defaultParams, {
+    const { findings } = await fetchUnresolvedCodexFindings(defaultParams, {
       warning: warn,
     });
 
@@ -263,7 +265,7 @@ describe("fetchUnresolvedCodexFindings", () => {
       ]),
     );
 
-    const findings = await fetchUnresolvedCodexFindings(defaultParams);
+    const { findings } = await fetchUnresolvedCodexFindings(defaultParams);
 
     expect(findings).toHaveLength(1);
     expect(findings[0].commentId).toBe(9007199254740000);
@@ -280,7 +282,7 @@ describe("fetchUnresolvedCodexFindings", () => {
       ]),
     );
 
-    const findings = await fetchUnresolvedCodexFindings(defaultParams);
+    const { findings } = await fetchUnresolvedCodexFindings(defaultParams);
 
     expect(findings).toHaveLength(1);
     expect(findings[0].commentId).toBe(222);
@@ -298,7 +300,7 @@ describe("fetchUnresolvedCodexFindings", () => {
       ]),
     );
 
-    const findings = await fetchUnresolvedCodexFindings(defaultParams, {
+    const { findings } = await fetchUnresolvedCodexFindings(defaultParams, {
       warning: warn,
     });
 
@@ -319,10 +321,89 @@ describe("fetchUnresolvedCodexFindings", () => {
       ]),
     );
 
-    const findings = await fetchUnresolvedCodexFindings(defaultParams);
+    const { findings } = await fetchUnresolvedCodexFindings(defaultParams);
 
     expect(findings).toHaveLength(1);
     expect(findings[0].createdAt).toBe("2026-05-12T03:04:05Z");
+  });
+
+  it("skips outdated threads (code already changed)", async () => {
+    mockGhApi.mockResolvedValueOnce(
+      makeGraphQLResponse([
+        makeThread({ databaseId: 901, body: "P1 Outdated finding", isOutdated: true }),
+        makeThread({ databaseId: 902, body: "P1 Current finding", isOutdated: false }),
+      ]),
+    );
+
+    const { findings } = await fetchUnresolvedCodexFindings(defaultParams);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0].commentId).toBe(902);
+  });
+
+  it("logs count of skipped outdated threads", async () => {
+    const warn = vi.fn();
+    mockGhApi.mockResolvedValueOnce(
+      makeGraphQLResponse([
+        makeThread({ databaseId: 1001, body: "P1 Outdated 1", isOutdated: true }),
+        makeThread({ databaseId: 1002, body: "P1 Outdated 2", isOutdated: true }),
+        makeThread({ databaseId: 1003, body: "P1 Current", isOutdated: false }),
+      ]),
+    );
+
+    const { findings } = await fetchUnresolvedCodexFindings(defaultParams, {
+      warning: warn,
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("outdated"),
+    );
+  });
+
+  it("returns latestOutdatedAt from skipped outdated threads", async () => {
+    mockGhApi.mockResolvedValueOnce(
+      makeGraphQLResponse([
+        makeThread({ databaseId: 1201, body: "P1 Older outdated", isOutdated: true, createdAt: "2026-05-01T00:00:00Z" }),
+        makeThread({ databaseId: 1202, body: "P1 Newer outdated", isOutdated: true, createdAt: "2026-05-05T00:00:00Z" }),
+        makeThread({ databaseId: 1203, body: "P1 Current", isOutdated: false }),
+      ]),
+    );
+
+    const result = await fetchUnresolvedCodexFindings(defaultParams);
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.latestOutdatedAt).toBe("2026-05-05T00:00:00Z");
+  });
+
+  it("returns null latestOutdatedAt when no outdated threads exist", async () => {
+    mockGhApi.mockResolvedValueOnce(
+      makeGraphQLResponse([
+        makeThread({ databaseId: 1301, body: "P1 Current" }),
+      ]),
+    );
+
+    const result = await fetchUnresolvedCodexFindings(defaultParams);
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.latestOutdatedAt).toBeNull();
+  });
+
+  it("skips outdated threads even when isResolved is false", async () => {
+    mockGhApi.mockResolvedValueOnce(
+      makeGraphQLResponse([
+        makeThread({
+          databaseId: 1101,
+          body: "P0 Critical but outdated",
+          isResolved: false,
+          isOutdated: true,
+        }),
+      ]),
+    );
+
+    const { findings } = await fetchUnresolvedCodexFindings(defaultParams);
+
+    expect(findings).toHaveLength(0);
   });
 
   it("handles null line (file-level comment)", async () => {
@@ -332,7 +413,7 @@ describe("fetchUnresolvedCodexFindings", () => {
       ]),
     );
 
-    const findings = await fetchUnresolvedCodexFindings(defaultParams);
+    const { findings } = await fetchUnresolvedCodexFindings(defaultParams);
 
     expect(findings).toHaveLength(1);
     expect(findings[0].line).toBeNull();

@@ -20740,7 +20740,8 @@ async function demoteFixingOnCrash(label, deps = defaultDeps2) {
       // TY-273 #B4 / TY-282: the fixing attempt did not complete so the
       // timestamp is no longer meaningful and must not survive into the next
       // pre-fix stale check.
-      fixingStartedAt: null
+      fixingStartedAt: null,
+      currentIterationFindingCommentIds: []
     };
     let stateWriteSucceeded = false;
     try {
@@ -20779,7 +20780,11 @@ function createLockedStateUpdater(args) {
       const message = error2 instanceof Error ? error2.message : String(error2);
       args.warning(`[${args.label}] Hidden comment state conflict. ${message}`);
       const handler = options?.onConflict ?? args.onConflict;
-      await handler(detail);
+      try {
+        await handler(detail);
+      } catch (handlerError) {
+        args.warning(`[${args.label}] onConflict handler failed: ${handlerError instanceof Error ? handlerError.message : String(handlerError)}. Continuing with conflict signal.`);
+      }
       return false;
     }
   };
@@ -20812,7 +20817,7 @@ async function fetchReviewComments(repoOwner, repoName, prNumber, githubToken) {
     "--jq",
     // @json ensures each result is a single-line JSON-encoded string,
     // preventing multi-line jq pretty-printing from breaking split("\n") parsing
-    ".[] | {id: .id, user: {login: .user.login}, body: .body, path: .path, line: .line, createdAt: .created_at} | @json"
+    ".[] | {id: .id, user: {login: .user.login}, body: .body, path: .path, line: .line, createdAt: .created_at, inReplyToId: .in_reply_to_id} | @json"
   ], githubToken);
   if (!stdout.trim())
     return [];
@@ -20831,7 +20836,12 @@ function parseReviewCommentRecord(line) {
       return false;
     const record = value;
     const user = record.user;
-    return typeof record.id === "number" && typeof user === "object" && user !== null && typeof user.login === "string" && typeof record.body === "string" && typeof record.path === "string" && (typeof record.line === "number" || record.line === null) && typeof record.createdAt === "string";
+    if (!(typeof record.id === "number" && typeof user === "object" && user !== null && typeof user.login === "string" && typeof record.body === "string" && typeof record.path === "string" && (typeof record.line === "number" || record.line === null) && typeof record.createdAt === "string"))
+      return false;
+    if (record.inReplyToId === void 0) {
+      record.inReplyToId = null;
+    }
+    return typeof record.inReplyToId === "number" || record.inReplyToId === null;
   }
   try {
     const parsed = JSON.parse(line);
@@ -20853,11 +20863,16 @@ function filterAndParseComments(comments, botLogin, lastReceivedAt, threshold) {
   const findings = [];
   let unparseable = 0;
   let belowThreshold = 0;
+  let threadReplies = 0;
   for (const comment of comments) {
     if (comment.user.login !== botLogin)
       continue;
     if (lastReceivedAt !== null && !(comment.createdAt > lastReceivedAt))
       continue;
+    if (comment.inReplyToId != null) {
+      threadReplies += 1;
+      continue;
+    }
     const parsed = parseSeverity(comment.body);
     if (parsed.severity === null) {
       unparseable += 1;
@@ -20883,7 +20898,7 @@ function filterAndParseComments(comments, botLogin, lastReceivedAt, threshold) {
   }
   return {
     findings,
-    skipped: { unparseable, belowThreshold }
+    skipped: { unparseable, belowThreshold, threadReplies }
   };
 }
 function shouldStabilizeReviewComments(comments, botLogin, lastReceivedAt, triggerSummaryBody, threshold) {
@@ -20929,6 +20944,8 @@ function countRelevantBotComments(comments, botLogin, lastReceivedAt, threshold)
     if (comment.user.login !== botLogin)
       return false;
     if (lastReceivedAt !== null && !(comment.createdAt > lastReceivedAt))
+      return false;
+    if (comment.inReplyToId != null)
       return false;
     const parsed = parseSeverity(comment.body);
     return parsed.severity !== null && isAtLeastSeverity(parsed.severity, threshold);
@@ -21217,7 +21234,7 @@ async function mergeIfChecksPass(owner, name, pr, token, log, overrides = {}) {
     }
     const selfWorkflowId = deps.selfRunId !== "" ? allRuns.find((r) => String(r.id) === deps.selfRunId)?.workflow_id : void 0;
     const others = selfWorkflowId !== void 0 ? allRuns.filter((r) => r.workflow_id !== selfWorkflowId) : deps.selfRunId !== "" && deps.selfWorkflowName !== "" ? (() => {
-      const inferredId = allRuns.find((r) => r.name === deps.selfWorkflowName && (deps.selfWorkflowPath === "" || r.path === void 0 || r.path.replace(/@.*$/, "") === deps.selfWorkflowPath))?.workflow_id;
+      const inferredId = allRuns.find((r) => r.name === deps.selfWorkflowName && (deps.selfWorkflowPath === "" || r.path !== void 0 && r.path.replace(/@.*$/, "") === deps.selfWorkflowPath))?.workflow_id;
       return inferredId !== void 0 ? allRuns.filter((r) => r.workflow_id !== inferredId) : allRuns;
     })() : deps.selfRunId !== "" ? allRuns.filter((r) => String(r.id) !== deps.selfRunId) : allRuns;
     const latestByWorkflowAndEvent = /* @__PURE__ */ new Map();
@@ -21945,6 +21962,7 @@ var UNRESOLVED_THREADS_QUERY = `query($owner:String!,$name:String!,$number:Int!,
         nodes{
           id
           isResolved
+          isOutdated
           path
           line
           comments(first:1){
@@ -21974,6 +21992,8 @@ function parsePage(stdout, codexBotLogin, severityThreshold) {
       malformed: true,
       skippedNonCodex: 0,
       skippedResolved: 0,
+      skippedOutdated: 0,
+      latestOutdatedAt: null,
       skippedUnparseable: 0,
       skippedBelowThreshold: 0,
       skippedMalformedId: 0,
@@ -21990,6 +22010,8 @@ function parsePage(stdout, codexBotLogin, severityThreshold) {
       malformed: true,
       skippedNonCodex: 0,
       skippedResolved: 0,
+      skippedOutdated: 0,
+      latestOutdatedAt: null,
       skippedUnparseable: 0,
       skippedBelowThreshold: 0,
       skippedMalformedId: 0,
@@ -22001,6 +22023,8 @@ function parsePage(stdout, codexBotLogin, severityThreshold) {
   const findings = [];
   let skippedNonCodex = 0;
   let skippedResolved = 0;
+  let skippedOutdated = 0;
+  let latestOutdatedAt = null;
   let skippedUnparseable = 0;
   let skippedBelowThreshold = 0;
   let skippedMalformedId = 0;
@@ -22021,6 +22045,15 @@ function parsePage(stdout, codexBotLogin, severityThreshold) {
     const authorLogin = typeof firstComment.author?.login === "string" ? firstComment.author.login : "";
     if (authorLogin !== codexBotLogin && authorLogin !== codexLoginBase) {
       skippedNonCodex += 1;
+      continue;
+    }
+    if (node.isOutdated === true) {
+      skippedOutdated += 1;
+      if (typeof firstComment.createdAt === "string") {
+        if (latestOutdatedAt === null || firstComment.createdAt > latestOutdatedAt) {
+          latestOutdatedAt = firstComment.createdAt;
+        }
+      }
       continue;
     }
     const body = typeof firstComment.body === "string" ? firstComment.body : "";
@@ -22055,6 +22088,8 @@ function parsePage(stdout, codexBotLogin, severityThreshold) {
     malformed: false,
     skippedNonCodex,
     skippedResolved,
+    skippedOutdated,
+    latestOutdatedAt,
     skippedUnparseable,
     skippedBelowThreshold,
     skippedMalformedId,
@@ -22065,6 +22100,8 @@ async function fetchUnresolvedCodexFindings(params, deps = { warning: () => {
 } }) {
   const all = [];
   let cursor = null;
+  let totalSkippedOutdated = 0;
+  let overallLatestOutdatedAt = null;
   let totalSkippedUnparseable = 0;
   let totalSkippedBelowThreshold = 0;
   let totalSkippedMalformedId = 0;
@@ -22096,6 +22133,10 @@ async function fetchUnresolvedCodexFindings(params, deps = { warning: () => {
       throw new UnresolvedFindingsFetchError(`[unresolved-findings] GraphQL response for ${params.owner}/${params.repo}#${params.prNumber} (page ${page}) is missing the reviewThreads container or is not valid JSON; the token may lack access or the API shape changed. Aborting /restart-review so unresolved Codex findings are not skipped.`);
     }
     all.push(...pageResult.findings);
+    totalSkippedOutdated += pageResult.skippedOutdated;
+    if (pageResult.latestOutdatedAt !== null && (overallLatestOutdatedAt === null || pageResult.latestOutdatedAt > overallLatestOutdatedAt)) {
+      overallLatestOutdatedAt = pageResult.latestOutdatedAt;
+    }
     totalSkippedUnparseable += pageResult.skippedUnparseable;
     totalSkippedBelowThreshold += pageResult.skippedBelowThreshold;
     totalSkippedMalformedId += pageResult.skippedMalformedId;
@@ -22106,6 +22147,9 @@ async function fetchUnresolvedCodexFindings(params, deps = { warning: () => {
     if (page === MAX_PAGES - 1) {
       deps.warning(`[unresolved-findings] Hit MAX_PAGES (${MAX_PAGES}) for ${params.owner}/${params.repo}#${params.prNumber} with more pages remaining; the unresolved findings set may be incomplete.`);
     }
+  }
+  if (totalSkippedOutdated > 0) {
+    deps.warning(`[unresolved-findings] Skipped ${totalSkippedOutdated} outdated Codex thread(s) (code already changed since finding was posted).`);
   }
   if (totalSkippedUnparseable > 0) {
     deps.warning(`[unresolved-findings] Skipped ${totalSkippedUnparseable} unresolved Codex thread(s) with unparseable severity.`);
@@ -22119,7 +22163,7 @@ async function fetchUnresolvedCodexFindings(params, deps = { warning: () => {
   if (totalSkippedMalformedNode > 0) {
     deps.warning(`[unresolved-findings] Dropped ${totalSkippedMalformedNode} null/malformed reviewThreads node(s); GitHub returned entries the token cannot resolve.`);
   }
-  return all;
+  return { findings: all, latestOutdatedAt: overallLatestOutdatedAt };
 }
 
 // dist/scope-checker.js
@@ -22223,11 +22267,19 @@ function selectModel(input2) {
 var USAGE_LIMIT_PATTERNS = [
   /reached your codex usage limits?(?: for code reviews?)?/i,
   /codex usage limits? (?:reached|exceeded)/i,
-  /you have (?:exceeded|reached) (?:the )?codex usage limits?/i,
-  /codex quota (?:limits? (?:reached|exceeded)|exceeded)/i
+  /you have (?:exceeded|reached|hit) (?:the )?codex (?:usage )?(?:limits?|cap)/i,
+  /codex quota (?:limits? (?:reached|exceeded)|exceeded|has been exceeded)/i,
+  /codex is (?:currently )?rate limited/i,
+  /you(?:'ve| have) (?:hit|reached|exceeded) (?:the )?codex (?:rate )?limit/i,
+  /codex (?:rate )?limit (?:reached|exceeded|has been (?:reached|exceeded))/i,
+  /codex usage cap (?:has been )?(?:reached|exceeded)/i,
+  /your codex (?:quota|usage cap) has been (?:reached|exceeded)/i
 ];
 function isCodexUsageLimitMessage(body) {
   if (typeof body !== "string" || body.length === 0) {
+    return false;
+  }
+  if (/\bP[0-3]\b/.test(body)) {
     return false;
   }
   return USAGE_LIMIT_PATTERNS.some((pattern) => pattern.test(body));
@@ -22338,7 +22390,7 @@ async function runPreFix(config, deps = defaultDeps3) {
       if (validationResult.handled)
         return;
     } else {
-      const unresolvedFindings = await deps.fetchUnresolvedCodexFindings({
+      const unresolvedResult = await deps.fetchUnresolvedCodexFindings({
         owner: config.repoOwner,
         repo: config.repoName,
         prNumber: config.prNumber,
@@ -22346,6 +22398,13 @@ async function runPreFix(config, deps = defaultDeps3) {
         severityThreshold: config.severityThreshold,
         token: config.githubToken
       }, { warning: deps.warning });
+      const unresolvedFindings = unresolvedResult.findings;
+      if (unresolvedResult.latestOutdatedAt !== null) {
+        const currentBaseline = validationResult.validation.preflight.nextState.lastCodexReviewReceivedAt ?? "";
+        if (unresolvedResult.latestOutdatedAt > currentBaseline) {
+          validationResult.validation.preflight.nextState.lastCodexReviewReceivedAt = unresolvedResult.latestOutdatedAt;
+        }
+      }
       if (unresolvedFindings.length > 0) {
         const capState = validationResult.validation.preflight.nextState;
         if (capState.iterationCount >= config.maxReviewIterations) {
@@ -22512,6 +22571,9 @@ async function runPreFix(config, deps = defaultDeps3) {
   }
   if (skipped.belowThreshold > 0) {
     deps.info(`[review-collector] Skipped ${skipped.belowThreshold} findings below threshold (threshold=${config.severityThreshold}).`);
+  }
+  if (skipped.threadReplies > 0) {
+    deps.info(`[review-collector] Skipped ${skipped.threadReplies} thread reply comment(s) (not root findings).`);
   }
   deps.info(`[pre-fix] Found ${findings.length} findings at or above threshold ${config.severityThreshold}.`);
   const latestCommentTime = rawComments.filter((c) => c.user.login === config.codexBotLogin).reduce((max, c) => c.createdAt > max ? c.createdAt : max, state.lastCodexReviewReceivedAt ?? "");

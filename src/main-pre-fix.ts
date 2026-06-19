@@ -349,7 +349,7 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
       // Not a restart command — fall through to normal processing.
     } else {
       // ES-413: check for unresolved Codex findings before choosing Case A or B.
-      const unresolvedFindings = await deps.fetchUnresolvedCodexFindings(
+      const unresolvedResult = await deps.fetchUnresolvedCodexFindings(
         {
           owner: config.repoOwner,
           repo: config.repoName,
@@ -360,6 +360,19 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
         },
         { warning: deps.warning },
       );
+      const unresolvedFindings = unresolvedResult.findings;
+
+      // ES-420: advance the baseline past skipped Codex outdated threads so
+      // the REST path (which lacks isOutdated) does not re-ingest them.
+      // Applied directly to the preflight state before Case A/B branching
+      // so it survives regardless of finding truncation or selection.
+      if (unresolvedResult.latestOutdatedAt !== null) {
+        const currentBaseline = validationResult.validation.preflight.nextState.lastCodexReviewReceivedAt ?? "";
+        if (unresolvedResult.latestOutdatedAt > currentBaseline) {
+          validationResult.validation.preflight.nextState.lastCodexReviewReceivedAt =
+            unresolvedResult.latestOutdatedAt;
+        }
+      }
 
       if (unresolvedFindings.length > 0) {
         const capState = validationResult.validation.preflight.nextState;
@@ -724,6 +737,11 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
   if (skipped.belowThreshold > 0) {
     deps.info(
       `[review-collector] Skipped ${skipped.belowThreshold} findings below threshold (threshold=${config.severityThreshold}).`,
+    );
+  }
+  if (skipped.threadReplies > 0) {
+    deps.info(
+      `[review-collector] Skipped ${skipped.threadReplies} thread reply comment(s) (not root findings).`,
     );
   }
 
