@@ -10,6 +10,7 @@ const loopCaller = readFileSync(".github/workflows/looppilot-loop.yml", "utf8");
 const readme = readFileSync("README.md", "utf8");
 const loopComposite = readFileSync("loop/action.yml", "utf8");
 const preFixAction = readFileSync("loop/pre-fix/action.yml", "utf8");
+const readmeJa = readFileSync("README.ja.md", "utf8");
 
 describe("reusable workflows: workflow_call surface", () => {
   it("both reusable workflows are workflow_call entrypoints", () => {
@@ -345,5 +346,48 @@ describe("ES-427: credential export step prevents empty ANTHROPIC_API_KEY from w
 
     expect(claudeStepBlock).not.toContain("anthropic_api_key:");
     expect(claudeStepBlock).not.toContain("claude_code_oauth_token:");
+  });
+});
+
+describe("ES-428: show-full-output input wiring (loop.yml → composite → claude-code-action)", () => {
+  // ES-428: OAuth token failures produced opaque errors because
+  // claude-code-action's show_full_output defaults to false, hiding
+  // the detailed error output. LoopPilot defaults it to true so
+  // operators see the full log unless they explicitly opt out.
+
+  it("loop.yml declares a show-full-output workflow_call input defaulting to 'true'", () => {
+    expect(loopReusable).toContain("show-full-output:");
+    expect(loopReusable).toContain('default: "true"');
+  });
+
+  it("loop.yml forwards show-full-output to the composite action via vars with input fallback", () => {
+    expect(loopReusable).toContain("show-full-output: ${{ vars.LOOPPILOT_SHOW_FULL_OUTPUT || inputs.show-full-output || 'true' }}");
+  });
+
+  it("loop/action.yml declares a show-full-output input defaulting to 'true'", () => {
+    expect(loopComposite).toContain("show-full-output:");
+    const inputIdx = loopComposite.indexOf("show-full-output:");
+    const nextInputOrRuns = loopComposite.indexOf("\nruns:", inputIdx);
+    const inputBlock = loopComposite.slice(inputIdx, nextInputOrRuns);
+    expect(inputBlock).toContain('default: "true"');
+  });
+
+  it("loop/action.yml passes show_full_output to claude-code-action@v1 (underscore convention)", () => {
+    // claude-code-action uses underscores; LoopPilot uses hyphens.
+    const claudeStepStart = loopComposite.indexOf("uses: anthropics/claude-code-action@v1");
+    expect(claudeStepStart).toBeGreaterThan(0);
+    const postFixStart = loopComposite.indexOf("Post-fix", claudeStepStart);
+    expect(postFixStart).toBeGreaterThan(claudeStepStart);
+    const claudeStepBlock = loopComposite.slice(claudeStepStart, postFixStart);
+
+    expect(claudeStepBlock).toContain("show_full_output: ${{ inputs.show-full-output }}");
+  });
+
+  it("README.md documents LOOPPILOT_SHOW_FULL_OUTPUT in the configuration table", () => {
+    expect(readme).toContain("`LOOPPILOT_SHOW_FULL_OUTPUT`");
+  });
+
+  it("README.ja.md documents LOOPPILOT_SHOW_FULL_OUTPUT in the configuration table", () => {
+    expect(readmeJa).toContain("`LOOPPILOT_SHOW_FULL_OUTPUT`");
   });
 });
