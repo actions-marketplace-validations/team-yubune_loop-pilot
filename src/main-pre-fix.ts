@@ -145,6 +145,23 @@ export interface PreFixDeps {
     pr: number,
     token: string,
   ) => Promise<string>;
+  /**
+   * ES-506: returns the reviewed commit SHA (`commit_id`) of a specific
+   * `pull_request_review` by its id, or `null` when the review is not found,
+   * the field is absent, or the lookup fails. Used by the done-branch HEAD-match
+   * guard to confirm the review that TRIGGERED this run actually reviewed the
+   * current HEAD before the loop is marked `done`. A duplicate / superseded
+   * review reviews an older commit than a just-pushed fix, so its
+   * `commit_id !== HEAD` — the guard skips (leaving `waiting_codex`) instead of
+   * prematurely declaring the loop clean.
+   */
+  fetchReviewCommitById: (
+    owner: string,
+    repo: string,
+    pr: number,
+    reviewId: number,
+    token: string,
+  ) => Promise<string | null>;
 }
 
 const defaultDeps: PreFixDeps = {
@@ -183,6 +200,22 @@ const defaultDeps: PreFixDeps = {
       token,
     );
     return stdout.trim();
+  },
+  fetchReviewCommitById: async (owner, repo, pr, reviewId, token) => {
+    // Fetch the single triggering review by id; its `commit_id` is the commit
+    // Codex actually reviewed. `// empty` yields "" (→ null below) when the
+    // field is absent. A 404 (review gone) throws out of ghApi and is handled
+    // as fail-open by the caller.
+    const out = await ghApi(
+      [
+        "api",
+        `repos/${owner}/${repo}/pulls/${pr}/reviews/${reviewId}`,
+        "--jq",
+        ".commit_id // empty",
+      ],
+      token,
+    );
+    return out.trim() || null;
   },
 };
 
@@ -793,6 +826,62 @@ export async function runPreFix(config: Config, deps: PreFixDeps = defaultDeps):
   };
 
   if (findings.length === 0) {
+    // ES-506: HEAD-match guard for `pull_request_review` triggers. A duplicate
+    // / superseded Codex review can drive a serialized pre-fix run whose
+    // findings collapse to 0 — the real findings were already consumed and
+    // fixed by the concurrent run that pushed the current HEAD and requested a
+    // fresh `@codex review` that has not arrived yet. Acting on that stale
+    // review would mark the loop `done` *before Codex has reviewed HEAD*, and
+    // the genuine HEAD re-review that arrives later is then swallowed by the
+    // `Status is 'done'. Skipping.` guard. So when the TRIGGERING review
+    // reviewed a commit older than HEAD, skip (leave `waiting_codex`) and let
+    // the pending HEAD re-review be processed as its own trigger.
+    //
+    // Scoped to review triggers on purpose: Codex's clean/no-findings verdict
+    // is routinely delivered as an `issue_comment` (docs/architecture/
+    // event-design.md), which carries no `commit_id` and must still mark done —
+    // so `issue_comment` triggers bypass this guard entirely.
+    //
+    // Gated on `lastClaudeCommitSha === headSha`: only when the current HEAD is
+    // LoopPilot's OWN just-pushed fix — post-fix writes both `lastClaudeCommitSha`
+    // and the `@codex review` re-request together (main-post-fix.ts) — is a
+    // fresh HEAD re-review guaranteed to be pending, which is precisely the
+    // ES-506 duplicate/superseded-review race. When HEAD advanced for any other
+    // reason (a human push, a base-branch merge, "Update branch") no re-review
+    // is necessarily coming, so we must NOT skip — those fall through to `done`
+    // exactly as before ES-506, avoiding a permanent `waiting_codex` strand.
+    //
+    // Fail-open: when the review commit cannot be determined (review gone or a
+    // lookup error) fall through to done rather than risk a never-done loop on a
+    // transient API blip.
+    // `readHeadSha` is read lazily, only for review triggers, so the common
+    // `issue_comment` clean-done path is untouched (no extra git call, no
+    // spurious "Could not read HEAD sha" warning).
+    if (currentTriggerSource === "review" && triggerCommentId !== 0) {
+      const headSha = deps.readHeadSha();
+      if (headSha !== "" && state.lastClaudeCommitSha === headSha) {
+        let reviewedCommit: string | null = null;
+        try {
+          reviewedCommit = await deps.fetchReviewCommitById(
+            config.repoOwner,
+            config.repoName,
+            config.prNumber,
+            triggerCommentId,
+            config.githubToken,
+          );
+        } catch (error) {
+          deps.warning(
+            `[pre-fix] Could not fetch the triggering review's commit for the HEAD-match guard: ${error instanceof Error ? error.message : String(error)}. Proceeding to evaluate done.`,
+          );
+        }
+        if (reviewedCommit !== null && reviewedCommit !== headSha) {
+          deps.info(
+            `[pre-fix] No new findings, but the triggering Codex review reviewed ${reviewedCommit.slice(0, 8)}, not HEAD (${headSha.slice(0, 8)}). LoopPilot pushed that fix and Codex has not re-reviewed HEAD yet — skipping instead of marking done (ES-506).`,
+          );
+          return;
+        }
+      }
+    }
     deps.info("[pre-fix] No findings. Marking done.");
     const doneState: ReviewState = {
       ...updatedStateBase,
