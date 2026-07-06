@@ -95,6 +95,10 @@ function makeDeps(
     // returns "deadbeef") so a review-triggered no-findings run reaches `done`.
     // Comment-triggered runs bypass the guard and never call this.
     fetchReviewCommitById: vi.fn().mockResolvedValue("deadbeef"),
+    // ES-426 #5: default to an open, ready PR so the lifecycle gate is a no-op.
+    fetchPrLifecycle: vi
+      .fn()
+      .mockResolvedValue({ state: "open", draft: false, merged: false }),
     outputs,
   };
 }
@@ -145,6 +149,72 @@ describe("runPreFix", () => {
 
     // Passes the fork guard; proceeds to the normal `done` skip (no error).
     expect(deps.error).not.toHaveBeenCalled();
+    expect(deps.fetchPrLabels).toHaveBeenCalled();
+  });
+
+  it.each([
+    ["merged", { state: "closed", draft: false, merged: true }],
+    ["closed", { state: "closed", draft: false, merged: false }],
+    ["draft", { state: "open", draft: true, merged: false }],
+  ])(
+    "ES-426 #5: skips (should_run=false, no state mutation) for a %s PR",
+    async (_label, lifecycle) => {
+      const deps = makeDeps({
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({ status: "waiting_codex" }),
+      });
+      deps.fetchPrLifecycle = vi.fn().mockResolvedValue(lifecycle);
+
+      await runPreFix(baseConfig, deps);
+
+      expect(deps.outputs.should_run).toBe("false");
+      expect(deps.updateStateComment).not.toHaveBeenCalled();
+      // Skips before the label gate / state read — no findings work done.
+      expect(deps.fetchPrLabels).not.toHaveBeenCalled();
+      expect(deps.readState).not.toHaveBeenCalled();
+    },
+  );
+
+  it("ES-426 #5: does NOT gate a /restart-review command on a draft PR (command bypasses the lifecycle gate)", async () => {
+    const deps = makeDeps({
+      found: true,
+      corrupted: false,
+      commentId: 100,
+      commentUpdatedAt: "2026-05-14T11:00:00Z",
+      state: makeState({ status: "waiting_codex" }),
+    });
+    // Even a draft PR must not silently drop an explicit command.
+    deps.fetchPrLifecycle = vi
+      .fn()
+      .mockResolvedValue({ state: "open", draft: true, merged: false });
+
+    await runPreFix(
+      { ...baseConfig, triggerCommentBody: "/restart-review" },
+      deps,
+    );
+
+    // The gate is skipped entirely for command triggers; the restart path runs.
+    expect(deps.fetchPrLifecycle).not.toHaveBeenCalled();
+    expect(deps.validateRestartCommand).toHaveBeenCalled();
+  });
+
+  it("ES-426 #5: fails open (proceeds) when the PR lifecycle lookup throws", async () => {
+    const deps = makeDeps({
+      found: true,
+      corrupted: false,
+      commentId: 100,
+      commentUpdatedAt: "2026-05-14T11:00:00Z",
+      state: makeState({ status: "waiting_codex" }),
+    });
+    deps.fetchPrLifecycle = vi.fn().mockRejectedValue(new Error("api down"));
+
+    await runPreFix(baseConfig, deps);
+
+    // Proceeds past the gate: warning logged, label gate still consulted.
+    expect(deps.warning).toHaveBeenCalled();
     expect(deps.fetchPrLabels).toHaveBeenCalled();
   });
 

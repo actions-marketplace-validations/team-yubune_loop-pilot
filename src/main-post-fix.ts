@@ -11,6 +11,7 @@ import {
   updateStateComment as defaultUpdateStateComment,
 } from "./state-manager.js";
 import { createLockedStateUpdater } from "./state-comment-locker.js";
+import { fetchPrLifecycle } from "./gh.js";
 import * as git from "./git.js";
 import { runCheckCommand as defaultRunCheckCommand } from "./check-runner.js";
 import { runBuildCommand as defaultRunBuildCommand } from "./build-runner.js";
@@ -194,6 +195,18 @@ export interface PostFixDeps {
   push: (owner: string, repo: string, ref: string, token: string) => void;
   /** Reads the file at `path` as utf-8. Returns null on failure. */
   readActionExecutionFile: (path: string) => string | null;
+  /**
+   * ES-426 #5: reads the PR lifecycle state (`state` / `draft` / `merged`) so
+   * post-fix can discard the repair and pause instead of committing / pushing /
+   * re-requesting review on a PR that was closed / merged / drafted during the
+   * claude-code-action run.
+   */
+  fetchPrLifecycle: (
+    owner: string,
+    repo: string,
+    pr: number,
+    token: string,
+  ) => Promise<{ state: string; draft: boolean; merged: boolean }>;
 }
 
 const defaultDeps: PostFixDeps = {
@@ -235,6 +248,8 @@ const defaultDeps: PostFixDeps = {
       return null;
     }
   },
+  fetchPrLifecycle: (owner, repo, pr, token) =>
+    fetchPrLifecycle(owner, repo, pr, token),
 };
 
 /**
@@ -1054,6 +1069,81 @@ export async function runPostFix(
       `[post-fix] auto-retry-escalate: state=waiting_codex; escalated retry pending. Review request: ${ack.lastCommentId}`,
     );
     return true;
+  }
+
+  // ─── PR lifecycle gate (ES-426 #5) ────────────────────────────────────────
+  // If the PR was closed / merged / converted to draft during the run, do not
+  // commit / push / re-request review — including via the ES-496 max_turns
+  // auto-retry, which posts an `@codex review` on the failure path. Placed
+  // BEFORE the outcome handling so it covers BOTH the success path and the
+  // auto-retry. Discard the uncommitted repair, roll back the optimistic fixing
+  // claim (no iteration consumed), and pause at waiting_codex — non-destructive,
+  // resumes on the next Codex review once the PR is open and ready.
+  //
+  // `stopReason` is intentionally preserved (via `...state`): rollbackFixingClaim
+  // rewinds this iteration, so the paused state should mirror the pre-iteration
+  // waiting_codex state, including any escalation signal (e.g.
+  // `max_turns_exceeded`) carried in from a prior `/restart-review` — the resumed
+  // iteration then re-escalates until an actual clean commit clears it (one-shot,
+  // same as the normal Phase 4 semantics).
+  //
+  // Fail-open on lookup error so a transient API failure cannot strand a healthy
+  // repair.
+  try {
+    const lifecycle = await deps.fetchPrLifecycle(
+      config.repoOwner,
+      config.repoName,
+      config.prNumber,
+      config.githubToken,
+    );
+    if (lifecycle.merged || lifecycle.state === "closed" || lifecycle.draft) {
+      const reason = lifecycle.merged
+        ? "merged"
+        : lifecycle.state === "closed"
+          ? "closed"
+          : "a draft";
+      deps.warning(
+        `[post-fix] PR #${config.prNumber} is ${reason}; discarding the uncommitted repair and pausing (no commit / re-review). Resumes on the next Codex review once the PR is open and ready.`,
+      );
+      try {
+        deps.resetWorkingTree();
+      } catch (resetError) {
+        deps.error(
+          `[post-fix] Failed to reset working tree after detecting a ${reason} PR: ${
+            resetError instanceof Error ? resetError.message : String(resetError)
+          }`,
+        );
+      }
+      const pausedState: ReviewState = {
+        ...state,
+        ...rollbackFixingClaim(state),
+        status: "waiting_codex",
+        fixingStartedAt: null,
+        currentIterationFindingCommentIds: [],
+      };
+      // Per-call onConflict: a benign lifecycle pause must not post the default
+      // `state_conflict` "⚠️ stopped" comment (which would contradict the
+      // non-terminal pause). A concurrent writer already owns the state — warn
+      // and move on (mirrors the TY-286 re-review write pattern).
+      await updateStateCommentLocked(
+        pausedState,
+        `Could not pause after detecting a ${reason} PR.`,
+        {
+          onConflict: async (detail) => {
+            deps.warning(
+              `[post-fix] ${detail} State was advanced by a concurrent run; lifecycle pause skipped.`,
+            );
+          },
+        },
+      );
+      return;
+    }
+  } catch (error) {
+    deps.warning(
+      `[post-fix] Could not read PR lifecycle state for #${config.prNumber} (${
+        error instanceof Error ? error.message : String(error)
+      }); proceeding.`,
+    );
   }
 
   // ─── claude-code-action outcome handling ─────────────────────────────────

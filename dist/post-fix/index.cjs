@@ -19375,6 +19375,20 @@ async function ghApi(args, token, opts = {}) {
     throw new Error(fullMessage);
   }
 }
+async function fetchPrLifecycle(owner, repo, pr, token) {
+  const stdout = await ghApi([
+    "api",
+    `repos/${owner}/${repo}/pulls/${pr}`,
+    "--jq",
+    "{state: .state, draft: (.draft // false), merged: (.merged // false)} | @json"
+  ], token);
+  const parsed = JSON.parse(stdout.trim());
+  return {
+    state: typeof parsed.state === "string" ? parsed.state : "",
+    draft: parsed.draft === true,
+    merged: parsed.merged === true
+  };
+}
 
 // dist/claude-code-repair-request.js
 var PREVIOUS_CHECK_FAILURE_MAX_CHARS = 2e4;
@@ -19459,7 +19473,7 @@ function validateState(obj) {
     return false;
   if (!Array.isArray(s.findingsHashHistory))
     return false;
-  if (s.lastProcessedReviewId !== null && typeof s.lastProcessedReviewId !== "number")
+  if (s.lastProcessedReviewId !== null && !Number.isSafeInteger(s.lastProcessedReviewId))
     return false;
   if ("lastProcessedTriggerSource" in s && s.lastProcessedTriggerSource !== null && s.lastProcessedTriggerSource !== "comment" && s.lastProcessedTriggerSource !== "review") {
     return false;
@@ -19467,7 +19481,7 @@ function validateState(obj) {
   if (s.lastClaudeCommitSha !== null && (typeof s.lastClaudeCommitSha !== "string" || s.lastClaudeCommitSha.length > LAST_CLAUDE_COMMIT_SHA_MAX_CHARS)) {
     return false;
   }
-  if (s.lastCodexRequestCommentId !== null && typeof s.lastCodexRequestCommentId !== "number")
+  if (s.lastCodexRequestCommentId !== null && !Number.isSafeInteger(s.lastCodexRequestCommentId))
     return false;
   if (s.lastCodexReviewReceivedAt !== null && (typeof s.lastCodexReviewReceivedAt !== "string" || s.lastCodexReviewReceivedAt.length > TIMESTAMP_MAX_CHARS)) {
     return false;
@@ -19502,7 +19516,7 @@ function validateState(obj) {
     if (typeof entry2 !== "object" || entry2 === null)
       return false;
     const e = entry2;
-    if (typeof e.iteration !== "number" || typeof e.hash !== "string" || e.hash.length > FINDINGS_HASH_MAX_CHARS) {
+    if (!Number.isSafeInteger(e.iteration) || typeof e.hash !== "string" || e.hash.length > FINDINGS_HASH_MAX_CHARS) {
       return false;
     }
     if ("modelTier" in e && e.modelTier !== void 0 && e.modelTier !== "base" && e.modelTier !== "escalated") {
@@ -19922,8 +19936,14 @@ function isStatusCommentRecord(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const v = value;
-  return typeof v.id === "number" && typeof v.body === "string";
+  return typeof v.id === "number" && typeof v.body === "string" && (v.updatedAt === void 0 || typeof v.updatedAt === "string");
 }
+var StatusCommentConflictError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "StatusCommentConflictError";
+  }
+};
 async function findStatusComment(owner, name, pr, token) {
   const authorFilter = buildTrustedAuthorJqFilter(getTrustedStateCommentAuthors());
   const stdout = await ghApi([
@@ -19931,7 +19951,7 @@ async function findStatusComment(owner, name, pr, token) {
     `repos/${owner}/${name}/issues/${pr}/comments`,
     "--paginate",
     "--jq",
-    `.[] | select(${authorFilter}) | select(.body | startswith("${STATUS_COMMENT_OPEN}")) | {id: .id, body: .body} | @json`
+    `.[] | select(${authorFilter}) | select(.body | startswith("${STATUS_COMMENT_OPEN}")) | {id: .id, body: .body, updatedAt: .updated_at} | @json`
   ], token);
   const trimmed = stdout.trim();
   if (!trimmed)
@@ -19969,7 +19989,19 @@ async function createStatusCommentImpl(owner, name, pr, body, token) {
   }
   return id;
 }
-async function updateStatusCommentImpl(owner, name, commentId, body, token) {
+async function updateStatusCommentImpl(owner, name, commentId, body, token, expectedUpdatedAt) {
+  if (expectedUpdatedAt !== void 0) {
+    const stdout = await ghApi([
+      "api",
+      `repos/${owner}/${name}/issues/comments/${commentId}`,
+      "--jq",
+      ".updated_at"
+    ], token);
+    const actual = stdout.trim();
+    if (actual !== expectedUpdatedAt) {
+      throw new StatusCommentConflictError(`Status comment updated_at changed before PATCH (expected ${expectedUpdatedAt}, actual ${actual})`);
+    }
+  }
   await ghApi([
     "api",
     "--method",
@@ -19987,17 +20019,29 @@ var defaultDeps = {
   updateStatusComment: updateStatusCommentImpl
 };
 async function upsertStatusComment(owner, name, pr, update, token, deps = defaultDeps) {
-  const existing = await deps.findStatusComment(owner, name, pr, token);
-  if (existing === null) {
-    const snapshot2 = applyStatusUpdate(createInitialStatusSnapshot(), update);
-    const body2 = renderStatusCommentBody(snapshot2);
-    return deps.createStatusComment(owner, name, pr, body2, token);
+  const MAX_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const existing = await deps.findStatusComment(owner, name, pr, token);
+    if (existing === null) {
+      const snapshot2 = applyStatusUpdate(createInitialStatusSnapshot(), update);
+      const body2 = renderStatusCommentBody(snapshot2);
+      return deps.createStatusComment(owner, name, pr, body2, token);
+    }
+    const previousSnapshot = parseStatusCommentBody(existing.body) ?? createInitialStatusSnapshot();
+    const snapshot = applyStatusUpdate(previousSnapshot, update);
+    const body = renderStatusCommentBody(snapshot);
+    const isLastAttempt = attempt === MAX_ATTEMPTS;
+    try {
+      await deps.updateStatusComment(owner, name, existing.id, body, token, isLastAttempt ? void 0 : existing.updatedAt);
+      return existing.id;
+    } catch (err) {
+      if (err instanceof StatusCommentConflictError && !isLastAttempt) {
+        continue;
+      }
+      throw err;
+    }
   }
-  const previousSnapshot = parseStatusCommentBody(existing.body) ?? createInitialStatusSnapshot();
-  const snapshot = applyStatusUpdate(previousSnapshot, update);
-  const body = renderStatusCommentBody(snapshot);
-  await deps.updateStatusComment(owner, name, existing.id, body, token);
-  return existing.id;
+  throw new Error("upsertStatusComment: exhausted retries without resolving");
 }
 
 // dist/comment-poster.js
@@ -21329,6 +21373,19 @@ async function resolveFindingThreads(params, deps = defaultDeps3) {
   return { resolved, alreadyResolved, failed, unmatched };
 }
 
+// dist/bot-login.js
+function stripBotSuffix(login) {
+  return login.replace(/\[bot\]$/i, "");
+}
+function isBotSuffixed(login) {
+  return /\[bot\]$/i.test(login);
+}
+function botLoginMatches(actual, configured) {
+  if (actual === configured)
+    return true;
+  return stripBotSuffix(actual) === stripBotSuffix(configured) && isBotSuffixed(actual);
+}
+
 // dist/codex-ack.js
 var defaultCodexAckDeps = {
   getEyesReactors: async (owner, repo, commentId, token) => {
@@ -21357,7 +21414,7 @@ var defaultCodexAckDeps = {
         return false;
       const login = line.slice(0, pipeIdx);
       const createdAt = line.slice(pipeIdx + 1);
-      return login === codexBotLogin && new Date(createdAt).getTime() >= new Date(sinceIso).getTime();
+      return botLoginMatches(login, codexBotLogin) && new Date(createdAt).getTime() >= new Date(sinceIso).getTime();
     })) {
       return true;
     }
@@ -21374,7 +21431,7 @@ var defaultCodexAckDeps = {
         return false;
       const login = line.slice(0, pipeIdx);
       const submittedAt = line.slice(pipeIdx + 1);
-      return login === codexBotLogin && new Date(submittedAt).getTime() >= new Date(sinceIso).getTime();
+      return botLoginMatches(login, codexBotLogin) && new Date(submittedAt).getTime() >= new Date(sinceIso).getTime();
     });
   },
   postCodexReviewRequest,
@@ -21388,7 +21445,7 @@ async function waitForAckWindow(params, deps, commentId, requestedAt, pollInterv
   for (; ; ) {
     try {
       const reactors = await deps.getEyesReactors(params.owner, params.repo, commentId, params.readToken);
-      if (reactors.includes(params.codexBotLogin)) {
+      if (reactors.some((r) => botLoginMatches(r, params.codexBotLogin))) {
         return "eyes";
       }
     } catch (error2) {
@@ -21485,7 +21542,8 @@ var defaultDeps4 = {
     } catch {
       return null;
     }
-  }
+  },
+  fetchPrLifecycle: (owner, repo, pr, token) => fetchPrLifecycle(owner, repo, pr, token)
 };
 function countUntrackedAddedLines(content) {
   if (content === "")
@@ -21825,6 +21883,33 @@ async function runPostFix(config, deps = defaultDeps4, inputs = readPostFixInput
     }
     deps.info(`[post-fix] auto-retry-escalate: state=waiting_codex; escalated retry pending. Review request: ${ack.lastCommentId}`);
     return true;
+  }
+  try {
+    const lifecycle = await deps.fetchPrLifecycle(config.repoOwner, config.repoName, config.prNumber, config.githubToken);
+    if (lifecycle.merged || lifecycle.state === "closed" || lifecycle.draft) {
+      const reason = lifecycle.merged ? "merged" : lifecycle.state === "closed" ? "closed" : "a draft";
+      deps.warning(`[post-fix] PR #${config.prNumber} is ${reason}; discarding the uncommitted repair and pausing (no commit / re-review). Resumes on the next Codex review once the PR is open and ready.`);
+      try {
+        deps.resetWorkingTree();
+      } catch (resetError) {
+        deps.error(`[post-fix] Failed to reset working tree after detecting a ${reason} PR: ${resetError instanceof Error ? resetError.message : String(resetError)}`);
+      }
+      const pausedState = {
+        ...state,
+        ...rollbackFixingClaim(state),
+        status: "waiting_codex",
+        fixingStartedAt: null,
+        currentIterationFindingCommentIds: []
+      };
+      await updateStateCommentLocked(pausedState, `Could not pause after detecting a ${reason} PR.`, {
+        onConflict: async (detail) => {
+          deps.warning(`[post-fix] ${detail} State was advanced by a concurrent run; lifecycle pause skipped.`);
+        }
+      });
+      return;
+    }
+  } catch (error2) {
+    deps.warning(`[post-fix] Could not read PR lifecycle state for #${config.prNumber} (${error2 instanceof Error ? error2.message : String(error2)}); proceeding.`);
   }
   const outcome = inputs.actionOutcome.toLowerCase();
   if (outcome !== "success") {
