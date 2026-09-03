@@ -31,6 +31,25 @@ export interface WorkflowRunSummary {
   event: string;
 }
 
+/**
+ * ES-426 #2: a check run from `GET /repos/{owner}/{repo}/commits/{ref}/check-runs`.
+ * External CI providers (CircleCI, Jenkins, …) integrate via the Checks API as
+ * GitHub Apps and are NOT visible in `/actions/runs`. GitHub Actions jobs ALSO
+ * appear here (app slug `github-actions`) but are already covered — and
+ * self-excluded — by the workflow-runs path, so the merge gate consults only
+ * non-`github-actions` check runs to avoid double-counting and, critically, to
+ * avoid the loop's own in-progress job blocking its own merge.
+ */
+export interface CheckRunSummary {
+  name: string;
+  /** queued | in_progress | completed. */
+  status: string;
+  /** success | failure | neutral | cancelled | timed_out | action_required | stale | skipped | null. */
+  conclusion: string | null;
+  /** The integrating GitHub App's slug, e.g. "github-actions", "circleci". */
+  appSlug: string;
+}
+
 export interface MergerDeps {
   /** Returns the PR's current HEAD sha. */
   getPrHeadSha: (owner: string, name: string, pr: number, token: string) => Promise<string>;
@@ -48,6 +67,19 @@ export interface MergerDeps {
     sha: string,
     token: string,
   ) => Promise<WorkflowRunSummary[]>;
+  /**
+   * ES-426 #2: returns the check runs on the given commit (external CI via the
+   * Checks API). Optional: when absent, the merge gate considers only
+   * `/actions/runs` (the pre-ES-426 behaviour). `mergeIfChecksPass` filters out
+   * `github-actions` check runs (already covered by listWorkflowRuns) and gates
+   * on the remaining external ones.
+   */
+  listCheckRuns?: (
+    owner: string,
+    name: string,
+    sha: string,
+    token: string,
+  ) => Promise<CheckRunSummary[]>;
   /**
    * Runs `gh pr merge <pr> --auto --squash --match-head-commit <sha> --repo …`.
    * Throws on failure. `expectedHeadSha` is the sha we verified the CI on;
@@ -104,8 +136,8 @@ export interface MergerDeps {
   /** Hard budget for the entire wait. Skip + warn after this elapses. */
   timeoutMs: number;
   /**
-   * Minimum wall-clock time that must elapse before treating
-   * `others.length === 0` as "no CI configured" and proceeding to merge.
+   * Minimum wall-clock time that must elapse before treating `!hasCi` (no
+   * workflow runs AND no external check runs) as "no CI configured" and merging.
    * Guards against premature merges in environments where CI registration
    * takes longer than a couple of poll intervals (self-hosted runner
    * cold-start, large `workflow_run` provenance chains, actions/runs API
@@ -143,6 +175,18 @@ const FAILED_CONCLUSIONS: ReadonlySet<string> = new Set([
   "startup_failure",
   "stale",
 ]);
+
+/**
+ * ES-426 #2: "blocking rank" of a check run, used to dedup the same external
+ * check appearing on both the head and merge refs — keep the most-blocking
+ * (failed > pending > green) so a green head check cannot mask a pending or
+ * failed merge-ref check.
+ */
+function rankCheck(c: CheckRunSummary): number {
+  if (c.conclusion !== null && FAILED_CONCLUSIONS.has(c.conclusion)) return 2;
+  if (c.status !== "completed") return 1;
+  return 0;
+}
 
 export const DEFAULT_AUTO_MERGE_POLL_INTERVAL_MS = 15 * 1000;
 export const DEFAULT_AUTO_MERGE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -210,6 +254,40 @@ function defaultMergerDeps(overrides: Partial<MergerDeps> = {}): MergerDeps {
         }
       }
       return runs;
+    },
+    listCheckRuns: async (owner, name, sha, token) => {
+      // The check-runs endpoint returns `{ total_count, check_runs: [...] }`.
+      // `--paginate` + `--jq ".check_runs[]"` rebuilds the array across pages,
+      // same pattern as listWorkflowRuns. `.app.slug` identifies the integrating
+      // App so the caller can exclude github-actions (self-coverage).
+      const stdout = await ghApi(
+        [
+          "api",
+          "--paginate",
+          // `filter=latest` (the API default, pinned explicitly) returns only
+          // the most recent run per check name, so a stale failed re-run does
+          // not over-block. Relying on the implicit default would silently
+          // change behaviour if GitHub ever flips it to `all`.
+          `/repos/${owner}/${name}/commits/${encodeURIComponent(sha)}/check-runs?per_page=100&filter=latest`,
+          "--jq",
+          '.check_runs[] | {name: .name, status: .status, conclusion: .conclusion, appSlug: (.app.slug // "")}',
+        ],
+        token,
+      );
+      const checks: CheckRunSummary[] = [];
+      for (const line of stdout.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed === "") continue;
+        try {
+          checks.push(JSON.parse(trimmed) as CheckRunSummary);
+        } catch {
+          // Fail-closed, same rationale as listWorkflowRuns: an unparseable
+          // line could be a failed/pending external check; dropping it would
+          // make the gate fail open.
+          throw new Error(`Failed to parse check-run record: ${trimmed}`);
+        }
+      }
+      return checks;
     },
     mergeSquash: async (owner, name, pr, expectedHeadSha, token) => {
       await ghApi(
@@ -410,6 +488,46 @@ export async function mergeIfChecksPass(
       }
     }
 
+    // ES-426 #2: external CI (CircleCI/Jenkins/… via the Checks API) is invisible
+    // to /actions/runs, so gate on non-github-actions check runs too. Fetched for
+    // head + merge sha and deduped by name+appSlug (a given external check has one
+    // entry per sha; the same check reported on both refs is the same check). Only
+    // external checks are kept — github-actions check runs duplicate the
+    // self-excluded workflow runs and the loop's own in-progress job would
+    // otherwise block its own merge. Fail-closed on fetch error like the
+    // workflow-runs path: refusing to merge when external CI cannot be verified.
+    let externalChecks: CheckRunSummary[] = [];
+    if (deps.listCheckRuns) {
+      try {
+        const headChecks = await deps.listCheckRuns(owner, name, initialHeadSha, token);
+        const mergeChecks = mergeSha
+          ? await deps.listCheckRuns(owner, name, mergeSha, token)
+          : [];
+        const byKey = new Map<string, CheckRunSummary>();
+        for (const c of [...headChecks, ...mergeChecks]) {
+          if (c.appSlug === "github-actions") continue;
+          // Keep the most "blocking" entry per check when it appears on both
+          // refs: prefer a pending/failed status over a completed/success one so
+          // a green head check cannot mask a still-pending merge-ref check.
+          const key = `${c.appSlug}:${c.name}`;
+          const existing = byKey.get(key);
+          if (existing === undefined || rankCheck(c) > rankCheck(existing)) {
+            byKey.set(key, c);
+          }
+        }
+        externalChecks = Array.from(byKey.values());
+      } catch (err) {
+        await deps.postSkipNotification?.({
+          kind: "transient_error",
+          detail: `failed to list check runs (${errMessage(err)})`,
+        });
+        log.warning(
+          `[pr-merger] Skipping auto-merge for PR #${pr}: failed to list check runs (${errMessage(err)}).`,
+        );
+        return;
+      }
+    }
+
     // Exclude the loop-pilot workflow entirely (not just the current run)
     // so that previous loop attempts on the same commit (e.g. transient infra
     // failures that left a `failure`/`cancelled` conclusion) do not permanently
@@ -466,9 +584,19 @@ export async function mergeIfChecksPass(
     }
     const deduped = Array.from(latestByWorkflowAndEvent.values());
 
-    const failed = deduped.filter(
-      (r) => r.conclusion !== null && FAILED_CONCLUSIONS.has(r.conclusion),
-    );
+    // ES-426 #2: evaluate GitHub Actions workflow runs AND external check runs
+    // (CircleCI/Jenkins/…) together. `hasCi` gates the "no CI configured"
+    // fast-path so a repo whose ONLY signal is an external check is not merged
+    // before that check reports.
+    const hasCi = deduped.length > 0 || externalChecks.length > 0;
+    const failed: Array<{ name: string; conclusion: string | null }> = [
+      ...deduped.filter(
+        (r) => r.conclusion !== null && FAILED_CONCLUSIONS.has(r.conclusion),
+      ),
+      ...externalChecks.filter(
+        (c) => c.conclusion !== null && FAILED_CONCLUSIONS.has(c.conclusion),
+      ),
+    ];
     if (failed.length > 0) {
       const names = failed
         .map((r) => `${r.name} (${r.conclusion})`)
@@ -486,7 +614,10 @@ export async function mergeIfChecksPass(
       return;
     }
 
-    const pending = deduped.filter((r) => r.status !== "completed");
+    const pending: Array<{ name: string }> = [
+      ...deduped.filter((r) => r.status !== "completed"),
+      ...externalChecks.filter((c) => c.status !== "completed"),
+    ];
     // P2: merge when all current runs are complete (no pending). If there are
     // no non-self runs yet, wait at least `noCiConfiguredDelayMs` of wall-clock
     // time before treating their absence as "no CI configured" and merging.
@@ -504,9 +635,8 @@ export async function mergeIfChecksPass(
       // pending list. When every non-self run is complete and green, let the
       // merge win — failures were already rejected at the `failed.length > 0`
       // gate above, and `!mergeShaLookupNull` confirms GitHub settled the merge
-      // ref. The no-CI (`others.length === 0`) case keeps its own dedicated
-      // handling below.
-      if (others.length > 0 && pending.length === 0 && !mergeShaLookupNull) {
+      // ref. The no-CI (`!hasCi`) case keeps its own dedicated handling below.
+      if (hasCi && pending.length === 0 && !mergeShaLookupNull) {
         try {
           await deps.mergeSquash(owner, name, pr, initialHeadSha, token);
           log.info(
@@ -523,7 +653,7 @@ export async function mergeIfChecksPass(
         }
         return;
       }
-      if (others.length === 0) {
+      if (!hasCi) {
         // TY-328: no non-self CI run ever appeared within the full timeout
         // budget. The fast-path no-CI merge below only fires once
         // `elapsedMs >= noCiConfiguredDelayMs` (default 60s); when the operator
@@ -560,7 +690,7 @@ export async function mergeIfChecksPass(
           `[pr-merger] Skipping auto-merge for PR #${pr}: timed out after ${timeoutMinutes} min waiting for the merge commit sha to settle.`,
         );
       } else if (pending.length === 0) {
-        // others.length > 0 and pending is empty, yet the green-merge branch
+        // hasCi is true and pending is empty, yet the green-merge branch
         // above did not fire — so `mergeShaLookupNull` must be true (GitHub has
         // not produced a merge commit sha; the PR is likely unmergeable due to
         // base-branch conflicts). Reporting `timeout_pending` here would emit a
@@ -590,7 +720,7 @@ export async function mergeIfChecksPass(
 
     if (pending.length === 0 && !mergeShaLookupNull) {
       const elapsedSufficient =
-        others.length > 0 || elapsedMs >= deps.noCiConfiguredDelayMs;
+        hasCi || elapsedMs >= deps.noCiConfiguredDelayMs;
       if (elapsedSufficient) {
         try {
           await deps.mergeSquash(owner, name, pr, initialHeadSha, token);
@@ -609,11 +739,11 @@ export async function mergeIfChecksPass(
         return;
       }
     }
-    // others.length === 0 and elapsed < noCiConfiguredDelayMs: CI may not have
+    // !hasCi and elapsed < noCiConfiguredDelayMs: CI may not have
     // been queued yet; fall through to sleep and retry.
 
     pollCount += 1;
-    if (others.length === 0) {
+    if (!hasCi) {
       log.info(
         `[pr-merger] Waiting for non-self CI runs to appear for PR #${pr} (poll ${pollCount}).`,
       );

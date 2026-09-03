@@ -10,6 +10,62 @@ freeze. See [docs/operations/releasing.md](docs/operations/releasing.md).
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-07-06
+
+### Fixed
+- Defensive hardening from the ES-420 audit (ES-426):
+  - Bot-login matching is now `[bot]`-suffix agnostic across all REST paths
+    (review collection, Codex ACK, usage-limit detection). Setting
+    `CODEX_BOT_LOGIN` without the `[bot]` suffix no longer silently drops every
+    Codex comment. Shared `botLoginMatches` util (item 1).
+  - Auto-merge now also gates on external CI reported via the Checks API
+    (CircleCI, Jenkins, … as GitHub Apps), not only `/actions/runs`. GitHub
+    Actions check runs are excluded to avoid double-counting / self-blocking.
+    In a repo without branch protection a failing external check no longer
+    slips past auto-merge (item 2).
+  - The status comment upsert is guarded with an optimistic lock (its
+    `updated_at`) and retries with a re-read + re-merge on conflict, so a
+    concurrent writer no longer clobbers history entries (item 3).
+  - Hidden-state validation rejects non-finite / non-integer
+    `lastProcessedReviewId`, `lastCodexRequestCommentId`, and
+    `findingsHashHistory[].iteration` (`Number.isSafeInteger`), so a
+    hand-edited `NaN`/`Infinity` can no longer break dedup / loop detection
+    (item 4).
+  - pre-fix and post-fix skip closed / merged / draft PRs (pre-fix before
+    invoking claude-code-action; post-fix discards the uncommitted repair and
+    pauses), so the loop no longer spends model credits on a PR that cannot
+    land. Non-destructive — resumes on the next Codex review once the PR is
+    open and ready (item 5).
+
+## [1.11.0] - 2026-07-06
+
+### Added
+- Opt-in escalated-tier auto-retry on `max_turns_exceeded` (`LOOPPILOT_AUTO_RETRY_ESCALATE`,
+  default `false`). When enabled, a base-tier iteration that stops with
+  `max_turns_exceeded` no longer waits for a manual `/restart-review`: post-fix
+  re-requests `@codex review` and returns to `waiting_codex` preserving the stop
+  reason, so the next pre-fix escalates the model tier automatically. One-shot —
+  an escalated-tier attempt that also exceeds `--max-turns` stops as before — and
+  a no-op when `CLAUDE_CODE_MODEL_BASE === CLAUDE_CODE_MODEL_ESCALATED`. A
+  `🔁 LoopPilot auto-retry` comment records each automatic re-request; a failed
+  re-request / missing Codex ACK degrades to `stopped/codex_request_failed` like
+  the existing re-review path (ES-496).
+
+## [1.10.2] - 2026-07-06
+
+### Fixed
+- Pre-fix no longer declares the loop `done` when a `pull_request_review`
+  trigger comes from a duplicate or superseded Codex review whose reviewed
+  `commit_id` is not the current HEAD, *and* that HEAD is LoopPilot's own
+  just-pushed fix (so a fresh `@codex review` of HEAD is already pending). In
+  that case the serialized run now skips (leaving `waiting_codex`) instead of
+  prematurely marking `done` and swallowing the genuine HEAD re-review. The
+  guard is deliberately narrow: it applies only to review triggers (Codex's
+  clean verdict arrives as an `issue_comment` without a `commit_id` and still
+  marks done), only when HEAD equals `lastClaudeCommitSha` (a benign external
+  HEAD advance still marks done, avoiding a permanent `waiting_codex` strand),
+  and it fails open when the review commit cannot be determined (ES-506).
+
 ## [1.10.1] - 2026-06-20
 
 ### Changed

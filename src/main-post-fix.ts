@@ -11,6 +11,7 @@ import {
   updateStateComment as defaultUpdateStateComment,
 } from "./state-manager.js";
 import { createLockedStateUpdater } from "./state-comment-locker.js";
+import { fetchPrLifecycle } from "./gh.js";
 import * as git from "./git.js";
 import { runCheckCommand as defaultRunCheckCommand } from "./check-runner.js";
 import { runBuildCommand as defaultRunBuildCommand } from "./build-runner.js";
@@ -37,6 +38,7 @@ import {
 } from "./claude-code-repair-request.js";
 import {
   deriveIterationProgress,
+  postComment as defaultPostComment,
   postClaudeCodeActionFixSummary as defaultPostClaudeCodeActionFixSummary,
   postCodexReviewRequest as defaultPostCodexReviewRequest,
   postStopComment as defaultPostStopComment,
@@ -88,6 +90,12 @@ export interface PostFixDeps {
   runBuildCommand: typeof defaultRunBuildCommand;
   postClaudeCodeActionFixSummary: typeof defaultPostClaudeCodeActionFixSummary;
   postCodexReviewRequest: typeof defaultPostCodexReviewRequest;
+  /**
+   * ES-496: posts a plain top-level PR comment. Used only for the
+   * `🔁 LoopPilot auto-retry` audit comment that explains why an `@codex review`
+   * was re-posted without a `/restart-review` (max_turns escalated retry).
+   */
+  postComment: typeof defaultPostComment;
   // TY-334: injected so tests can drive ACK / no-ACK without real polling.
   ensureCodexAck: (params: CodexAckParams) => Promise<CodexAckResult>;
   /**
@@ -187,6 +195,18 @@ export interface PostFixDeps {
   push: (owner: string, repo: string, ref: string, token: string) => void;
   /** Reads the file at `path` as utf-8. Returns null on failure. */
   readActionExecutionFile: (path: string) => string | null;
+  /**
+   * ES-426 #5: reads the PR lifecycle state (`state` / `draft` / `merged`) so
+   * post-fix can discard the repair and pause instead of committing / pushing /
+   * re-requesting review on a PR that was closed / merged / drafted during the
+   * claude-code-action run.
+   */
+  fetchPrLifecycle: (
+    owner: string,
+    repo: string,
+    pr: number,
+    token: string,
+  ) => Promise<{ state: string; draft: boolean; merged: boolean }>;
 }
 
 const defaultDeps: PostFixDeps = {
@@ -196,6 +216,7 @@ const defaultDeps: PostFixDeps = {
   runBuildCommand: defaultRunBuildCommand,
   postClaudeCodeActionFixSummary: defaultPostClaudeCodeActionFixSummary,
   postCodexReviewRequest: defaultPostCodexReviewRequest,
+  postComment: defaultPostComment,
   ensureCodexAck: (params) => ensureCodexAck(params),
   resolveFindingThreads: defaultResolveFindingThreads,
   postStopComment: defaultPostStopComment,
@@ -227,6 +248,8 @@ const defaultDeps: PostFixDeps = {
       return null;
     }
   },
+  fetchPrLifecycle: (owner, repo, pr, token) =>
+    fetchPrLifecycle(owner, repo, pr, token),
 };
 
 /**
@@ -804,6 +827,325 @@ export async function runPostFix(
     }
   }
 
+  /**
+   * ES-496: on a base-tier `max_turns_exceeded`, retry once at the escalated
+   * tier WITHOUT waiting for a manual `/restart-review`. Returns `true` when it
+   * has taken over the terminal handling — either re-requesting `@codex review`
+   * and returning to `waiting_codex` (so the next pre-fix escalates via
+   * `previous_max_turns_exceeded`), or demoting to `stopped/codex_request_failed`
+   * when the re-request cannot reach Codex. Returns `false` when auto-retry does
+   * not apply, so the caller proceeds with the normal `failureExit`.
+   *
+   * The working tree was already reverted by the outer failure branch. This
+   * deliberately mirrors (rather than shares) Phase 4's re-request/demotion
+   * contract so the merge-critical successful-repair path stays untouched.
+   */
+  async function attemptMaxTurnsAutoRetry(): Promise<boolean> {
+    if (!config.autoRetryEscalateMaxTurns) return false;
+
+    // No higher tier exists under fixed-model operation → escalation is a no-op.
+    if (config.claudeCodeModelBase === config.claudeCodeModelEscalated) {
+      deps.info(
+        "[post-fix] auto-retry-escalate: base and escalated models are identical; not auto-retrying max_turns_exceeded.",
+      );
+      return false;
+    }
+
+    // Fire only when the just-run iteration used the base tier. The last
+    // findingsHashHistory entry records that tier (pre-fix Phase 3 appends it);
+    // a legacy/absent modelTier is treated as escalated (no higher tier). This
+    // is also the one-shot guard: an escalated retry that hits max_turns again
+    // has `modelTier: "escalated"` here and stops normally.
+    const lastTier = state.findingsHashHistory.at(-1)?.modelTier ?? "escalated";
+    if (lastTier !== "base") {
+      deps.info(
+        `[post-fix] auto-retry-escalate: previous iteration tier=${lastTier}; one-shot exhausted, stopping on max_turns_exceeded.`,
+      );
+      return false;
+    }
+
+    deps.info(
+      "[post-fix] auto-retry-escalate: base-tier max_turns_exceeded — re-requesting @codex review to retry once at the escalated tier (no /restart-review).",
+    );
+
+    // Roll back the base iteration's bookkeeping (same as failureExit) and
+    // return to waiting_codex preserving stopReason so the next pre-fix selects
+    // the escalated tier (`previous_max_turns_exceeded`).
+    const retryState: ReviewState = {
+      ...state,
+      ...rollbackFixingClaim(state),
+      status: "waiting_codex",
+      stopReason: "max_turns_exceeded",
+      fixingStartedAt: null,
+      currentIterationFindingCommentIds: [],
+    };
+    if (
+      !(await updateStateCommentLocked(
+        retryState,
+        "Could not record waiting_codex for the max_turns auto-retry.",
+      ))
+    ) {
+      // 412 conflict: another writer reconciled; the state is no longer fixing.
+      // Treat as handled so the caller does not also run failureExit.
+      return true;
+    }
+
+    // Demote to a restartable stop when the re-request cannot reach Codex
+    // (mirrors Phase 4 / TY-273 #B5). The reverted working tree means no commit
+    // was made, so /restart-review cleanly retries the same findings.
+    const demoteToCodexRequestFailed = async (
+      baseState: ReviewState,
+      detail: string,
+    ): Promise<void> => {
+      const stoppedState: ReviewState = {
+        ...baseState,
+        status: "stopped",
+        stopReason: "codex_request_failed",
+      };
+      if (
+        !(await updateStateCommentLocked(
+          stoppedState,
+          "Could not record codex_request_failed after a failed max_turns auto-retry.",
+          {
+            onConflict: async (conflictDetail) => {
+              deps.warning(
+                `[post-fix] ${conflictDetail} State was advanced by a concurrent run; auto-retry demotion skipped.`,
+              );
+            },
+          },
+        ))
+      ) {
+        return;
+      }
+      try {
+        await deps.postStopComment(
+          config.repoOwner,
+          config.repoName,
+          config.prNumber,
+          "codex_request_failed",
+          inputs.triggerCommentId,
+          0,
+          detail,
+          config.githubToken,
+          deriveIterationProgress(stoppedState, config.maxReviewIterations),
+        );
+      } catch (notifyError) {
+        deps.warning(
+          `[post-fix] auto-retry-escalate: demoted to codex_request_failed but failed to post the stop notification: ${
+            notifyError instanceof Error ? notifyError.message : String(notifyError)
+          }`,
+        );
+      }
+    };
+
+    deps.info(
+      "[post-fix] Posting @codex review request (max_turns auto-retry)...",
+    );
+    const codexRequestedAt = new Date().toISOString();
+    let reviewRequestId: number;
+    try {
+      reviewRequestId = await deps.postCodexReviewRequest(
+        config.repoOwner,
+        config.repoName,
+        config.prNumber,
+        config.codexReviewRequestToken,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      deps.error(
+        `[post-fix] auto-retry-escalate: failed to post @codex review: ${message}. Downgrading to stopped/codex_request_failed.`,
+      );
+      await demoteToCodexRequestFailed(
+        retryState,
+        `Failed to post @codex review for the max_turns escalated auto-retry: ${message}`,
+      );
+      return true;
+    }
+
+    // Audit comment (best-effort). Posted only AFTER `@codex review` actually
+    // went out, so a request failure above cannot leave an optimistic
+    // "retrying" comment contradicting the codex_request_failed stop.
+    try {
+      await deps.postComment(
+        config.repoOwner,
+        config.repoName,
+        config.prNumber,
+        "🔁 LoopPilot auto-retry: the base-tier repair hit `--max-turns`. " +
+          "Re-requested `@codex review` to retry once at the escalated tier " +
+          `(\`${config.claudeCodeModelEscalated}\`) — no \`/restart-review\` needed. ` +
+          "If the escalated attempt also exceeds `--max-turns`, the loop stops for manual follow-up.",
+        config.githubToken,
+      );
+    } catch (commentError) {
+      deps.warning(
+        `[post-fix] auto-retry-escalate: failed to post the audit comment (continuing): ${
+          commentError instanceof Error ? commentError.message : String(commentError)
+        }`,
+      );
+    }
+
+    const withRequestId: ReviewState = {
+      ...retryState,
+      lastCodexRequestCommentId: reviewRequestId,
+    };
+    let requestIdPersisted: boolean;
+    try {
+      requestIdPersisted = await updateStateCommentLocked(
+        withRequestId,
+        "Could not persist the auto-retry Codex review request comment id.",
+        {
+          onConflict: async (conflictDetail) => {
+            deps.warning(
+              `[post-fix] ${conflictDetail} LoopPilot state remains waiting_codex; the next Codex review trigger will reconcile.`,
+            );
+          },
+        },
+      );
+    } catch (recordError) {
+      // The @codex review comment was posted and state is waiting_codex; a
+      // non-conflict failure to persist the id is non-fatal (mirrors Phase 4).
+      deps.warning(
+        `[post-fix] auto-retry-escalate: failed to persist the review request id (non-conflict error): ${
+          recordError instanceof Error ? recordError.message : String(recordError)
+        }. State remains waiting_codex; the next Codex trigger will reconcile.`,
+      );
+      return true;
+    }
+    if (!requestIdPersisted) {
+      // 412 conflict: a concurrent run already advanced the state (e.g. the
+      // incoming Codex review drove a fresh pre-fix). Skip the ACK poll — the
+      // concurrent writer now owns the loop (mirrors Phase 4's guard).
+      return true;
+    }
+
+    const ack = await deps.ensureCodexAck({
+      owner: config.repoOwner,
+      repo: config.repoName,
+      pr: config.prNumber,
+      commentId: reviewRequestId,
+      requestedAt: codexRequestedAt,
+      codexBotLogin: config.codexBotLogin,
+      readToken: config.githubToken,
+      token: config.codexReviewRequestToken,
+      timeoutSeconds: config.codexAckTimeoutSeconds,
+      pollIntervalSeconds: config.codexAckPollIntervalSeconds,
+      maxReposts: config.codexAckMaxReposts,
+    });
+    if (!ack.acked) {
+      await demoteToCodexRequestFailed(
+        { ...withRequestId, lastCodexRequestCommentId: ack.lastCommentId },
+        `Codex did not acknowledge the escalated auto-retry @codex review request after ${config.codexAckMaxReposts} repost(s) (≈${config.codexAckTimeoutSeconds}s per attempt). No commit was made; run /restart-review once Codex is reachable to retry at the escalated tier.`,
+      );
+      return true;
+    }
+
+    // If the ACK only arrived after a repost, record the latest @codex review
+    // comment id (mirrors Phase 4). Best-effort — the state is already
+    // waiting_codex — so a failure here is swallowed rather than demoting a
+    // healthy loop.
+    if (ack.reposts > 0 && ack.lastCommentId !== reviewRequestId) {
+      try {
+        await updateStateCommentLocked(
+          { ...withRequestId, lastCodexRequestCommentId: ack.lastCommentId },
+          "Could not persist the reposted auto-retry Codex review request id.",
+          {
+            onConflict: async (conflictDetail) => {
+              deps.warning(
+                `[post-fix] ${conflictDetail} LoopPilot state remains waiting_codex; the next Codex review trigger will reconcile.`,
+              );
+            },
+          },
+        );
+      } catch (repostWriteError) {
+        deps.warning(
+          `[post-fix] auto-retry-escalate: failed to persist the reposted review request id ${ack.lastCommentId}: ${
+            repostWriteError instanceof Error ? repostWriteError.message : String(repostWriteError)
+          }. State remains waiting_codex; the next Codex trigger will reconcile.`,
+        );
+      }
+    }
+
+    deps.info(
+      `[post-fix] auto-retry-escalate: state=waiting_codex; escalated retry pending. Review request: ${ack.lastCommentId}`,
+    );
+    return true;
+  }
+
+  // ─── PR lifecycle gate (ES-426 #5) ────────────────────────────────────────
+  // If the PR was closed / merged / converted to draft during the run, do not
+  // commit / push / re-request review — including via the ES-496 max_turns
+  // auto-retry, which posts an `@codex review` on the failure path. Placed
+  // BEFORE the outcome handling so it covers BOTH the success path and the
+  // auto-retry. Discard the uncommitted repair, roll back the optimistic fixing
+  // claim (no iteration consumed), and pause at waiting_codex — non-destructive,
+  // resumes on the next Codex review once the PR is open and ready.
+  //
+  // `stopReason` is intentionally preserved (via `...state`): rollbackFixingClaim
+  // rewinds this iteration, so the paused state should mirror the pre-iteration
+  // waiting_codex state, including any escalation signal (e.g.
+  // `max_turns_exceeded`) carried in from a prior `/restart-review` — the resumed
+  // iteration then re-escalates until an actual clean commit clears it (one-shot,
+  // same as the normal Phase 4 semantics).
+  //
+  // Fail-open on lookup error so a transient API failure cannot strand a healthy
+  // repair.
+  try {
+    const lifecycle = await deps.fetchPrLifecycle(
+      config.repoOwner,
+      config.repoName,
+      config.prNumber,
+      config.githubToken,
+    );
+    if (lifecycle.merged || lifecycle.state === "closed" || lifecycle.draft) {
+      const reason = lifecycle.merged
+        ? "merged"
+        : lifecycle.state === "closed"
+          ? "closed"
+          : "a draft";
+      deps.warning(
+        `[post-fix] PR #${config.prNumber} is ${reason}; discarding the uncommitted repair and pausing (no commit / re-review). Resumes on the next Codex review once the PR is open and ready.`,
+      );
+      try {
+        deps.resetWorkingTree();
+      } catch (resetError) {
+        deps.error(
+          `[post-fix] Failed to reset working tree after detecting a ${reason} PR: ${
+            resetError instanceof Error ? resetError.message : String(resetError)
+          }`,
+        );
+      }
+      const pausedState: ReviewState = {
+        ...state,
+        ...rollbackFixingClaim(state),
+        status: "waiting_codex",
+        fixingStartedAt: null,
+        currentIterationFindingCommentIds: [],
+      };
+      // Per-call onConflict: a benign lifecycle pause must not post the default
+      // `state_conflict` "⚠️ stopped" comment (which would contradict the
+      // non-terminal pause). A concurrent writer already owns the state — warn
+      // and move on (mirrors the TY-286 re-review write pattern).
+      await updateStateCommentLocked(
+        pausedState,
+        `Could not pause after detecting a ${reason} PR.`,
+        {
+          onConflict: async (detail) => {
+            deps.warning(
+              `[post-fix] ${detail} State was advanced by a concurrent run; lifecycle pause skipped.`,
+            );
+          },
+        },
+      );
+      return;
+    }
+  } catch (error) {
+    deps.warning(
+      `[post-fix] Could not read PR lifecycle state for #${config.prNumber} (${
+        error instanceof Error ? error.message : String(error)
+      }); proceeding.`,
+    );
+  }
+
   // ─── claude-code-action outcome handling ─────────────────────────────────
   const outcome = inputs.actionOutcome.toLowerCase();
   if (outcome !== "success") {
@@ -834,6 +1176,13 @@ export async function runPostFix(
         stopReason = "max_turns_exceeded";
         detail = "claude-code-action exhausted the configured --max-turns budget.";
       }
+    }
+
+    // ES-496: opt-in escalated-tier auto-retry on a base-tier max_turns stop.
+    // When it takes over (re-requests @codex review or demotes to
+    // codex_request_failed) skip the normal stop.
+    if (stopReason === "max_turns_exceeded" && (await attemptMaxTurnsAutoRetry())) {
+      return;
     }
 
     await failureExit({

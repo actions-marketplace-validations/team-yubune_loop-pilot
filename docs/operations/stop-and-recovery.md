@@ -19,7 +19,7 @@ Repository variable `LOOPPILOT_AUTO_MERGE=true` を設定すると、`done / no_
 動作:
 
 1. PR の HEAD sha を取得
-2. その sha に紐づく workflow runs を `GET /repos/.../actions/runs?head_sha=...` で列挙
+2. その sha に紐づく workflow runs を `GET /repos/.../actions/runs?head_sha=...` で列挙。**さらに ES-426 #2 で外部 CI（CircleCI / Jenkins 等、Checks API 経由の GitHub App）を `GET /repos/.../commits/{sha}/check-runs` で列挙し、同じ failure / pending 判定に含める**（`github-actions` app slug の check run は workflow runs 側でカバー済みなので除外 — loop 自身の in-progress job による self-block を避ける）。branch protection の無い repo でも外部 CI 失敗が auto-merge をすり抜けない
 3. 自分自身（`GITHUB_RUN_ID` が一致する loop-pilot run）は除外
 4. 1 つでも `failure` / `cancelled` / `timed_out` / `action_required` / `startup_failure` / `stale` conclusion があれば **マージしない** + warning
 5. すべて `completed` でかつ failure 無しなら `gh pr merge --auto --squash --match-head-commit <verified-sha>` を即発行（GitHub 側でも sha 一致を強制してチェック後の race を防ぐ）
@@ -63,6 +63,10 @@ Repository variable `LOOPPILOT_AUTO_MERGE=true` を設定すると、`done / no_
 | `LOOPPILOT_AUTO_MERGE_POLL_SECONDS` | `auto-merge-poll-seconds` | `15` | polling 間隔 |
 | `LOOPPILOT_AUTO_MERGE_TIMEOUT_MINUTES` | `auto-merge-timeout-minutes` | `10` | CI 待ちの上限 |
 
+### PR ライフサイクルによる自動スキップ (ES-426 #5)
+
+PR が **closed / merged / draft** の場合、pre-fix は claude-code-action を起動する前にループをスキップする（モデルクレジットを消費しない）。run 中に PR が closed/merged/draft へ変化した場合は post-fix が未コミットの修正を破棄して pause する（commit / push / 再レビューを行わない）。いずれも**非破壊的**（state は書き換えるが terminal 化しない）で、PR を open / ready に戻せば次の Codex review でループが再開する。ライフサイクル取得に失敗した場合は fail-open（従来どおり続行）。
+
 ### 強制停止
 - iteration_count >= `MAX_REVIEW_ITERATIONS`
 
@@ -78,7 +82,7 @@ Repository variable `LOOPPILOT_AUTO_MERGE=true` を設定すると、`done / no_
 
 post-fix が repair commit を push した後に `@codex review` を投稿する API 呼び出しが失敗した場合 (rate limit / 認証エラー / network 障害)、`stopped/codex_request_failed` へ降格し、`postTerminalNotification` 経由で top-level コメントとして「Codex 再依頼に失敗したため停止」通知が PR に投稿される。repair commit 自体は branch に残るので、Codex の認証・接続を直してから `/restart-review` (soft) で再開すれば良い。`iterationCount` / `findingsHashHistory` は次 iteration が同じ findings を再評価できるよう保持される。
 
-検知ロジック: `src/main-post-fix.ts` の Phase 4 にある `postCodexReviewRequest` catch ブロック。no-op 経路の auto-retry は存在しないため、`codex_request_failed` の発生源は committed-fix 後の Phase 4 のみに集約されている。
+検知ロジック: `src/main-post-fix.ts` の Phase 4 にある `postCodexReviewRequest` catch ブロック（+ ACK 無応答時の降格）。加えて ES-496 の escalated-tier 自動リトライ (`attemptMaxTurnsAutoRetry`, opt-in) も、その `@codex review` 再投稿失敗 / Codex 無 ACK 時に同じ `codex_request_failed` へ降格する。ただしこの経路は **repair commit を伴わない** (working tree は revert 済み) 点が Phase 4 と異なる — 停止コメントも「commit は無い」旨を明示する。復旧はどちらも `/restart-review` (soft) で、`iterationCount` / `findingsHashHistory` は保持される (auto-retry 経路は `rollbackFixingClaim` で base iteration を巻き戻し済み)。
 
 `/restart-review` 経由でも発火しうる: `handleRestartCommand` の第 1 書き込み (`status: waiting_codex` 確定) 直後に `@codex review` の再投稿が失敗した場合、同じ `codex_request_failed` stop reason で降格し top-level 停止コメントが投稿される。`addRestartReaction` / 「🟢 LoopPilot restarted」audit comment は付かない (restart 自体が成立していないため)。復旧手順は post-fix 経由の場合と同じ — Codex 認証 / 接続を直してから `/restart-review` (soft / hard どちらでも) で再開する。
 
@@ -329,6 +333,7 @@ hard restart。soft restart の操作に加えて、`iterationCount` を `0`、`
 - `fixing` のまま停止している場合: 実行中の Workflow B がないことを確認してから `/restart-review --hard`
 - `codex_usage_limit` で停止した場合: Codex 側の quota がリセットされたタイミングで `/restart-review` (soft)。`iterationCount` は保持される
 - `max_turns_exceeded` で停止した場合: `/restart-review` (soft) で再開する。次 iteration は自動で escalated tier (default Opus) に上がる (`previous_max_turns_exceeded`)。1 回 clean commit に到達すると `stopReason` がクリアされ通常 tiering に戻る (one-shot)
+  - **自動リトライ (opt-in, ES-496)**: Repository variable `LOOPPILOT_AUTO_RETRY_ESCALATE=true` を設定すると、**base tier** の `max_turns_exceeded` では停止せず post-fix がその場で `@codex review` を再投稿し `waiting_codex` (`stopReason: max_turns_exceeded` 保持) に戻す → 次 iteration が自動で escalated tier に上がる (`/restart-review` 不要)。発火時は `🔁 LoopPilot auto-retry` で始まる top-level コメントを投稿する。**one-shot**: escalated tier の iteration が再び `max_turns_exceeded` になった場合 (直前 `findingsHashHistory` entry の `modelTier === "escalated"`)、および `BASE === ESCALATED` (固定モデル運用) の場合は自動リトライせず従来どおり停止する。自動リトライの `@codex review` 投稿失敗 / Codex 無 ACK は `stopped/codex_request_failed` に降格する (commit は無いので `/restart-review` で同じ findings を再評価できる)
 - `workflow_crashed` で停止した場合: `/restart-review` (soft) で再開する。workflow crash 時には `iterationCount` が消費済みなので、connector / runner 側の不安定さが継続する場合は `/restart-review --hard` を検討
 
 ### `state_corrupted` の復旧

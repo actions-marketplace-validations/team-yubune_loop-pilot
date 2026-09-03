@@ -42,6 +42,7 @@ const baseConfig: Config = {
   autoReviewBlockPaths: "",
   scopeMaxFiles: 0,
   scopeMaxLines: 0,
+  autoRetryEscalateMaxTurns: false,
   codexAckTimeoutSeconds: 90,
   codexAckPollIntervalSeconds: 15,
   codexAckMaxReposts: 2,
@@ -90,6 +91,14 @@ function makeDeps(
     fetchPrHeadRepoFullName: vi
       .fn()
       .mockResolvedValue("edereship/loop-pilot"),
+    // ES-506: default to "the triggering review reviewed HEAD" (readHeadSha
+    // returns "deadbeef") so a review-triggered no-findings run reaches `done`.
+    // Comment-triggered runs bypass the guard and never call this.
+    fetchReviewCommitById: vi.fn().mockResolvedValue("deadbeef"),
+    // ES-426 #5: default to an open, ready PR so the lifecycle gate is a no-op.
+    fetchPrLifecycle: vi
+      .fn()
+      .mockResolvedValue({ state: "open", draft: false, merged: false }),
     outputs,
   };
 }
@@ -140,6 +149,72 @@ describe("runPreFix", () => {
 
     // Passes the fork guard; proceeds to the normal `done` skip (no error).
     expect(deps.error).not.toHaveBeenCalled();
+    expect(deps.fetchPrLabels).toHaveBeenCalled();
+  });
+
+  it.each([
+    ["merged", { state: "closed", draft: false, merged: true }],
+    ["closed", { state: "closed", draft: false, merged: false }],
+    ["draft", { state: "open", draft: true, merged: false }],
+  ])(
+    "ES-426 #5: skips (should_run=false, no state mutation) for a %s PR",
+    async (_label, lifecycle) => {
+      const deps = makeDeps({
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({ status: "waiting_codex" }),
+      });
+      deps.fetchPrLifecycle = vi.fn().mockResolvedValue(lifecycle);
+
+      await runPreFix(baseConfig, deps);
+
+      expect(deps.outputs.should_run).toBe("false");
+      expect(deps.updateStateComment).not.toHaveBeenCalled();
+      // Skips before the label gate / state read — no findings work done.
+      expect(deps.fetchPrLabels).not.toHaveBeenCalled();
+      expect(deps.readState).not.toHaveBeenCalled();
+    },
+  );
+
+  it("ES-426 #5: does NOT gate a /restart-review command on a draft PR (command bypasses the lifecycle gate)", async () => {
+    const deps = makeDeps({
+      found: true,
+      corrupted: false,
+      commentId: 100,
+      commentUpdatedAt: "2026-05-14T11:00:00Z",
+      state: makeState({ status: "waiting_codex" }),
+    });
+    // Even a draft PR must not silently drop an explicit command.
+    deps.fetchPrLifecycle = vi
+      .fn()
+      .mockResolvedValue({ state: "open", draft: true, merged: false });
+
+    await runPreFix(
+      { ...baseConfig, triggerCommentBody: "/restart-review" },
+      deps,
+    );
+
+    // The gate is skipped entirely for command triggers; the restart path runs.
+    expect(deps.fetchPrLifecycle).not.toHaveBeenCalled();
+    expect(deps.validateRestartCommand).toHaveBeenCalled();
+  });
+
+  it("ES-426 #5: fails open (proceeds) when the PR lifecycle lookup throws", async () => {
+    const deps = makeDeps({
+      found: true,
+      corrupted: false,
+      commentId: 100,
+      commentUpdatedAt: "2026-05-14T11:00:00Z",
+      state: makeState({ status: "waiting_codex" }),
+    });
+    deps.fetchPrLifecycle = vi.fn().mockRejectedValue(new Error("api down"));
+
+    await runPreFix(baseConfig, deps);
+
+    // Proceeds past the gate: warning logged, label gate still consulted.
+    expect(deps.warning).toHaveBeenCalled();
     expect(deps.fetchPrLabels).toHaveBeenCalled();
   });
 
@@ -457,6 +532,238 @@ describe("runPreFix", () => {
     );
     expect(deps.postCompletionComment).toHaveBeenCalled();
     expect(deps.mergeIfChecksPass).not.toHaveBeenCalled();
+  });
+
+  // The premature-done race is driven by a `pull_request_review` trigger, so
+  // these ES-506 tests run with triggerEventName = "pull_request_review".
+  const reviewTriggerConfig: Config = {
+    ...baseConfig,
+    triggerEventName: "pull_request_review",
+    triggerCommentId: 4630710284,
+  };
+
+  it("ES-506: does NOT mark done when the triggering Codex review reviewed a commit older than HEAD", async () => {
+    // Reproduces the premature-done race: a concurrent run already consumed the
+    // findings, pushed a fix (HEAD is now "fixsha1"), and requested a fresh
+    // @codex review that has not arrived. This serialized run is triggered by a
+    // stale/duplicate review that reviewed the pre-fix commit ("oldsha0"), NOT
+    // HEAD, and sees 0 new findings. Marking done here would swallow the genuine
+    // HEAD re-review as `Status is 'done'. Skipping.`.
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        // HEAD is LoopPilot's own just-pushed fix (a re-review is pending).
+        state: makeState({
+          status: "waiting_codex",
+          lastClaudeCommitSha: "fixsha1",
+        }),
+      },
+      [], // no new findings
+    );
+    deps.readHeadSha = () => "fixsha1";
+    deps.fetchReviewCommitById = vi.fn().mockResolvedValue("oldsha0");
+
+    await runPreFix(reviewTriggerConfig, deps);
+
+    // Looks up the TRIGGERING review by its id, not "the latest review".
+    expect(deps.fetchReviewCommitById).toHaveBeenCalledWith(
+      "edereship",
+      "loop-pilot",
+      99,
+      4630710284,
+      "github-token",
+    );
+    // Must skip, not mark done: no `done` state write, no completion comment.
+    expect(deps.outputs.should_run).toBe("false");
+    const doneWrite = vi
+      .mocked(deps.updateStateComment)
+      .mock.calls.find((c) => c[3]?.status === "done");
+    expect(doneWrite).toBeUndefined();
+    expect(deps.postCompletionComment).not.toHaveBeenCalled();
+  });
+
+  it("ES-506: marks done when the triggering review reviewed HEAD", async () => {
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({
+          status: "waiting_codex",
+          lastClaudeCommitSha: "headsha",
+        }),
+      },
+      [],
+    );
+    deps.readHeadSha = () => "headsha";
+    deps.fetchReviewCommitById = vi.fn().mockResolvedValue("headsha");
+
+    await runPreFix(reviewTriggerConfig, deps);
+
+    expect(deps.updateStateComment).toHaveBeenCalledWith(
+      "edereship",
+      "loop-pilot",
+      100,
+      expect.objectContaining({ status: "done", stopReason: "no_findings" }),
+      "github-token",
+      expect.any(Object),
+    );
+    expect(deps.postCompletionComment).toHaveBeenCalled();
+  });
+
+  it("ES-506: marks done on an issue_comment clean verdict WITHOUT consulting review commits", async () => {
+    // Codex's clean/no-findings verdict is routinely an `issue_comment` (no
+    // commit_id). On a multi-iteration PR the last *formal review* is the older
+    // findings review on a prior commit, so a review-commit-vs-HEAD check would
+    // wrongly strand the loop. The guard must bypass entirely for comment
+    // triggers — even when a review-commit lookup *would* mismatch.
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({ status: "waiting_codex" }),
+      },
+      [],
+    );
+    deps.readHeadSha = () => "fixsha1";
+    deps.fetchReviewCommitById = vi.fn().mockResolvedValue("oldsha0");
+
+    // baseConfig.triggerEventName === "issue_comment"
+    await runPreFix(baseConfig, deps);
+
+    expect(deps.fetchReviewCommitById).not.toHaveBeenCalled();
+    expect(deps.postCompletionComment).toHaveBeenCalled();
+    const doneWrite = vi
+      .mocked(deps.updateStateComment)
+      .mock.calls.find((c) => c[3]?.status === "done");
+    expect(doneWrite).toBeDefined();
+  });
+
+  it("ES-506: fails open (marks done) when the review-commit lookup throws", async () => {
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({
+          status: "waiting_codex",
+          lastClaudeCommitSha: "headsha",
+        }),
+      },
+      [],
+    );
+    deps.readHeadSha = () => "headsha";
+    deps.fetchReviewCommitById = vi
+      .fn()
+      .mockRejectedValue(new Error("api down"));
+
+    await runPreFix(reviewTriggerConfig, deps);
+
+    expect(deps.warning).toHaveBeenCalled();
+    expect(deps.updateStateComment).toHaveBeenCalledWith(
+      "edereship",
+      "loop-pilot",
+      100,
+      expect.objectContaining({ status: "done", stopReason: "no_findings" }),
+      "github-token",
+      expect.any(Object),
+    );
+  });
+
+  it("ES-506: fails open (marks done) when the review has no commit_id (null)", async () => {
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({
+          status: "waiting_codex",
+          lastClaudeCommitSha: "headsha",
+        }),
+      },
+      [],
+    );
+    deps.readHeadSha = () => "headsha";
+    deps.fetchReviewCommitById = vi.fn().mockResolvedValue(null);
+
+    await runPreFix(reviewTriggerConfig, deps);
+
+    expect(deps.postCompletionComment).toHaveBeenCalled();
+    const doneWrite = vi
+      .mocked(deps.updateStateComment)
+      .mock.calls.find((c) => c[3]?.status === "done");
+    expect(doneWrite).toBeDefined();
+  });
+
+  it("ES-506: marks done on a first-pass clean review (no LoopPilot fix yet, lastClaudeCommitSha null)", async () => {
+    // Before any Claude fix, lastClaudeCommitSha is null, so the guard's
+    // `lastClaudeCommitSha === headSha` precondition is false and a clean review
+    // on the PR head marks done without consulting the review commit.
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({
+          status: "waiting_codex",
+          lastClaudeCommitSha: null,
+        }),
+      },
+      [],
+    );
+    deps.readHeadSha = () => "headsha";
+    deps.fetchReviewCommitById = vi.fn().mockResolvedValue("oldsha0");
+
+    await runPreFix(reviewTriggerConfig, deps);
+
+    expect(deps.fetchReviewCommitById).not.toHaveBeenCalled();
+    expect(deps.postCompletionComment).toHaveBeenCalled();
+    const doneWrite = vi
+      .mocked(deps.updateStateComment)
+      .mock.calls.find((c) => c[3]?.status === "done");
+    expect(doneWrite).toBeDefined();
+  });
+
+  it("ES-506: marks done (does NOT strand) when HEAD advanced past LoopPilot's fix for an external reason", async () => {
+    // Regression guard: Codex reviewed a commit, but HEAD is NOT LoopPilot's own
+    // just-pushed fix (lastClaudeCommitSha "loopB" != HEAD "externalC" — e.g. a
+    // human push or a base-branch merge moved HEAD). No fresh @codex review is
+    // necessarily coming, so the guard must NOT skip; marking done preserves the
+    // pre-ES-506 behaviour and avoids a permanent waiting_codex strand. The
+    // review-commit lookup must not even be consulted.
+    const deps = makeDeps(
+      {
+        found: true,
+        corrupted: false,
+        commentId: 100,
+        commentUpdatedAt: "2026-05-14T11:00:00Z",
+        state: makeState({
+          status: "waiting_codex",
+          lastClaudeCommitSha: "loopB",
+        }),
+      },
+      [],
+    );
+    deps.readHeadSha = () => "externalC";
+    deps.fetchReviewCommitById = vi.fn().mockResolvedValue("oldsha0");
+
+    await runPreFix(reviewTriggerConfig, deps);
+
+    expect(deps.fetchReviewCommitById).not.toHaveBeenCalled();
+    expect(deps.postCompletionComment).toHaveBeenCalled();
+    const doneWrite = vi
+      .mocked(deps.updateStateComment)
+      .mock.calls.find((c) => c[3]?.status === "done");
+    expect(doneWrite).toBeDefined();
   });
 
   it("second-truncates the now() fallback for lastCodexReviewReceivedAt (TY-359 / #150)", async () => {
